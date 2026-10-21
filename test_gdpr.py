@@ -36,6 +36,7 @@ OWNER, HQ, CHATS, BOT = 1, 100, 200, 9
 AGENTS = {"dev": 11, "ops": 12, "qa": 13}
 CFG = dict(token="x", owner_id=OWNER, hq_id=HQ, chats_id=CHATS, agents=AGENTS,
            owner_name="Alex", owner_aliases={"owner", "alex"})
+CFGR = dict(CFG, agents=dict(AGENTS, boss=14), restricted={"boss"})
 ENV = dict(GDPR_TOKEN="t", OWNER_ID="1", HQ_ID="100", CHATS_ID="200",
            AGENT_IDS="dev=11,ops=12,qa=13")
 
@@ -78,8 +79,12 @@ class MentionAdd(unittest.TestCase):
         g = make_guild()
         m = make_msg(g, 12, "hey <@11> take over", channel_id=300, parent_id=CHATS)
         m.channel.add_user = AsyncMock()
+        m.channel.fetch_members = AsyncMock(return_value=[])
+        m.channel.send = AsyncMock()
         run(W.Gdpr(CFG, BOT).handle_message(m))
         self.assertEqual([c.args[0].id for c in m.channel.add_user.call_args_list], [11])
+        # newly added agent gets a fresh ping, since the original message was not delivered to it
+        self.assertIn("<@11>", m.channel.send.call_args[0][0])
         self.assertFalse(g.hq.send.called)
 
     def test_no_mention_no_add(self):
@@ -268,6 +273,8 @@ class Ignored(unittest.TestCase):
         g2 = make_guild()
         m = make_msg(g2, OWNER, "<@11> hi", channel_id=300, parent_id=CHATS)
         m.channel.add_user = AsyncMock()
+        m.channel.fetch_members = AsyncMock(return_value=[])
+        m.channel.send = AsyncMock()
         run(W.Gdpr(CFG, BOT).handle_message(m))
         self.assertFalse(g2.hq.send.called)  # mention in a thread adds, never opens a thread
         g2.chats.create_thread.assert_not_called()
@@ -538,9 +545,11 @@ class Init(unittest.TestCase):
 
 
 class Discover(unittest.TestCase):
-    def fake(self, members_status=200, guilds=None, create_status=201):
+    def fake(self, members_status=200, guilds=None, named=True):
         calls = []
         chans = [{"id": "500", "name": "general", "type": 0}, {"id": "501", "name": "voice", "type": 2}]
+        if named:
+            chans += [{"id": "503", "name": "gdpr-hq", "type": 0}, {"id": "504", "name": "gdpr-threads", "type": 0}]
         guilds = [{"id": "77", "name": "Test"}] if guilds is None else guilds
 
         def call(token, method, path, body=None):
@@ -551,11 +560,6 @@ class Discover(unittest.TestCase):
                 return 200, guilds
             if path == "/guilds/77":
                 return 200, {"owner_id": "1"}
-            if method == "POST":
-                if create_status == 201:
-                    chans.append({"id": "502", "name": body["name"], "type": 0})
-                    return 201, chans[-1]
-                return create_status, {"message": "Missing Permissions"}
             if path == "/guilds/77/channels":
                 return 200, list(chans)
             if path.startswith("/guilds/77/members"):
@@ -568,26 +572,21 @@ class Discover(unittest.TestCase):
         return call, calls
 
     def test_suggests_env(self):
-        call, _ = self.fake()
-        out = W.discover({"GDPR_TOKEN": "t"}, call=call, say=lambda *_: None)
-        self.assertEqual(out, {"OWNER_ID": "1", "HQ_ID": "500", "CHATS_ID": "500", "AGENT_IDS": "dev-bot=11"})
-
-    def test_create_channel_is_picked(self):
         call, calls = self.fake()
-        out = W.discover({"GDPR_TOKEN": "t"}, create_channel="gdpr", call=call, say=lambda *_: None)
-        self.assertIn(("POST", "/guilds/77/channels", {"name": "gdpr", "type": 0}), calls)
-        self.assertEqual(out["HQ_ID"], "502")
+        out = W.discover({"GDPR_TOKEN": "t"}, call=call, say=lambda *_: None)
+        self.assertEqual(out, {"OWNER_ID": "1", "HQ_ID": "503", "CHATS_ID": "504", "AGENT_IDS": "dev-bot=11"})
+        self.assertFalse([c for c in calls if c[0] != "GET"])  # read-only
 
-    def test_create_channel_without_permission(self):
-        call, _ = self.fake(create_status=403)
-        with self.assertRaises(SystemExit):
-            W.discover({"GDPR_TOKEN": "t"}, create_channel="gdpr", call=call, say=lambda *_: None)
+    def test_missing_channels_are_placeholders(self):
+        call, _ = self.fake(named=False)
+        out = W.discover({"GDPR_TOKEN": "t"}, call=call, say=lambda *_: None)
+        self.assertTrue(out["HQ_ID"].startswith("<") and out["CHATS_ID"].startswith("<"))
 
     def test_members_intent_missing_still_works(self):
         call, _ = self.fake(members_status=403)
         out = W.discover({"GDPR_TOKEN": "t"}, call=call, say=lambda *_: None)
         self.assertEqual(out["AGENT_IDS"], "<name=id,...>")
-        self.assertEqual(out["HQ_ID"], "500")
+        self.assertEqual(out["HQ_ID"], "503")
 
     def test_not_invited_or_many_servers(self):
         for guilds in ([], [{"id": "77", "name": "a"}, {"id": "78", "name": "b"}]):
@@ -597,8 +596,68 @@ class Discover(unittest.TestCase):
         with self.assertRaises(SystemExit):
             W.discover({"GDPR_TOKEN": ""}, call=call, say=lambda *_: None)
 
-    def test_invite_has_manage_channels(self):
-        self.assertTrue(W.INVITE_PERMISSIONS & (1 << 4))
+    def test_invite_has_no_manage_channels(self):
+        self.assertFalse(W.INVITE_PERMISSIONS & (1 << 4))
+        self.assertEqual(W.INVITE_PERMISSIONS, 360777321472)
+
+
+class Restricted(unittest.TestCase):
+    def hq(self, uid, text):
+        g = make_guild()
+        run(W.Gdpr(CFGR, BOT).handle_message(make_msg(g, uid, text)))
+        return g
+
+    def test_agent_open_refused(self):
+        g = self.hq(11, '<@9> open "x" boss | hi')
+        self.assertFalse(g.chats.create_thread.called)
+        self.assertIn("owner only", g.hq.send.call_args[0][0])
+
+    def test_agent_plain_mention_refused(self):
+        g = self.hq(11, "<@14> do this")
+        self.assertFalse(g.chats.create_thread.called)
+        self.assertIn("owner only", g.hq.send.call_args[0][0])
+
+    def test_owner_plain_mention_opens(self):
+        g = self.hq(OWNER, "<@14> do this")
+        self.assertTrue(g.chats.create_thread.called)
+        self.assertIn(14, {c.args[0].id for c in g.thread.add_user.call_args_list})
+
+    def test_owner_open_with_others(self):
+        g = self.hq(OWNER, '<@9> open "x" boss dev | hi')
+        self.assertEqual({c.args[0].id for c in g.thread.add_user.call_args_list}, {1, 14, 11})
+
+    def test_agent_add_refused(self):
+        g = make_guild()
+        m = make_msg(g, 12, "<@9> add <#300> boss", channel_id=300, parent_id=CHATS)
+        run(W.Gdpr(CFGR, BOT).handle_message(m))
+        self.assertFalse(g.thread.add_user.called)
+        self.assertIn("owner only", g.hq.send.call_args[0][0])
+
+    def test_agent_mention_in_thread_does_not_add(self):
+        g = make_guild()
+        m = make_msg(g, 12, "hey <@14> help", channel_id=300, parent_id=CHATS)
+        m.channel.add_user = AsyncMock(); m.channel.fetch_members = AsyncMock(return_value=[]); m.channel.send = AsyncMock()
+        run(W.Gdpr(CFGR, BOT).handle_message(m))
+        self.assertFalse(m.channel.add_user.called)
+
+    def test_owner_mention_in_thread_adds(self):
+        g = make_guild()
+        m = make_msg(g, OWNER, "hey <@14> help", channel_id=300, parent_id=CHATS)
+        m.channel.add_user = AsyncMock(); m.channel.fetch_members = AsyncMock(return_value=[]); m.channel.send = AsyncMock()
+        run(W.Gdpr(CFGR, BOT).handle_message(m))
+        self.assertEqual([c.args[0].id for c in m.channel.add_user.call_args_list], [14])
+
+    def test_member_already_in_thread_not_repinged(self):
+        g = make_guild()
+        m = make_msg(g, OWNER, "hey <@11> again", channel_id=300, parent_id=CHATS)
+        m.channel.add_user = AsyncMock(); m.channel.send = AsyncMock()
+        m.channel.fetch_members = AsyncMock(return_value=[types.SimpleNamespace(id=11)])
+        run(W.Gdpr(CFG, BOT).handle_message(m))
+        self.assertFalse(m.channel.send.called)
+
+    def test_config_restricted(self):
+        c = W.load_config(dict(ENV, AGENT_IDS="dev=11,boss=14", RESTRICTED_AGENTS="Boss"))
+        self.assertEqual(c["restricted"], {"boss"})
 
 
 if __name__ == "__main__":
