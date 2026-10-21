@@ -1,7 +1,7 @@
 """GDPR: AI-free Discord bot that manages private threads for a team of agent bots. No model calls, no state files.
 
-Env: GDPR_TOKEN, OWNER_ID, HQ_ID, CHATS_ID, AGENT_IDS (name=id,name=id); optional OWNER_NAME.
-`python gdpr.py init <dir>` creates the age key and the secrets folder (see README).
+Env: GDPR_TOKEN, OWNER_ID, HQ_ID, CHATS_ID, AGENT_IDS (name=id,name=id); optional OWNER_NAME,
+RESTRICTED_AGENTS. `python gdpr.py setup <dir>` prepares Discord, .env, key and secrets folder (README B3).
 """
 import os
 import re
@@ -401,10 +401,17 @@ def main():
 
 
 BOT_UID = 10001
-# View Channel, Send Messages, Read Message History, Manage Threads, Create Private Threads,
-# Send Messages in Threads
-INVITE_PERMISSIONS = (1 << 10) | (1 << 11) | (1 << 16) | (1 << 34) | (1 << 36) | (1 << 38)
-HQ_NAME, THREADS_NAME = "gdpr-hq", "gdpr-threads"  # channel names the README asks for
+ADMIN, MANAGE_CHANNELS, VIEW, SEND, HISTORY, MANAGE_ROLES = 1 << 3, 1 << 4, 1 << 10, 1 << 11, 1 << 16, 1 << 28
+MANAGE_THREADS, CREATE_PUBLIC, CREATE_PRIVATE, SEND_IN_THREADS = 1 << 34, 1 << 35, 1 << 36, 1 << 38
+# Manage Channels + Manage Roles are only for `setup` (create channels, role, overwrites); a bot can
+# only allow/deny permissions it holds itself, hence Create Public Threads (it is denied to agents).
+INVITE_PERMISSIONS = (VIEW | SEND | HISTORY | MANAGE_THREADS | CREATE_PUBLIC | CREATE_PRIVATE | SEND_IN_THREADS
+                      | MANAGE_CHANNELS | MANAGE_ROLES)
+HQ_NAME, THREADS_NAME, ROLE_NAME = "gdpr-hq", "gdpr-threads", "agents"
+BOT_ALLOW = VIEW | SEND | HISTORY | MANAGE_THREADS | CREATE_PRIVATE | SEND_IN_THREADS
+OWNER_ALLOW = VIEW | SEND | HISTORY | SEND_IN_THREADS
+AGENT_THREADS_ALLOW = VIEW | HISTORY | SEND_IN_THREADS
+AGENT_THREADS_DENY = SEND | CREATE_PUBLIC | CREATE_PRIVATE | MANAGE_THREADS
 API = "https://discord.com/api/v10"
 
 
@@ -430,7 +437,7 @@ def public_key(key_path):
         for ln in f:
             if ln.strip().startswith("AGE-SECRET-KEY-"):
                 return str(pyrage.x25519.Identity.from_str(ln.strip()).to_public())
-    raise SystemExit(f"{key_path} has no age key; move it away and run init again")
+    raise SystemExit(f"{key_path} has no age key; move it away and run setup again")
 
 
 def init(out, env=None, chown=True):
@@ -443,7 +450,7 @@ def init(out, env=None, chown=True):
     key_path, inbox = os.path.join(out, "gdpr_age_key"), os.path.join(out, "secrets")
     if os.path.isdir(key_path):
         raise SystemExit(f"{key_path} is a folder (Docker made it because the key was missing). "
-                         "Delete it and run init again.")
+                         "Delete it and run setup again.")
     if os.path.exists(key_path):
         say("keeping existing gdpr_age_key")
     else:
@@ -462,7 +469,7 @@ def init(out, env=None, chown=True):
             os.chown(p, BOT_UID, BOT_UID)
     say("secrets folder ready: ./secrets")
     say("public key for the optional SecretCrypt plugin (also in gdpr_age_key.pub):\n  " + pub)
-    say("next: docker compose up -d (README step B6)")
+    say("next: check .env, then docker compose up -d (README steps B4 and B5)")
     return pub
 
 
@@ -489,19 +496,60 @@ def env_name(username):
     return re.sub(r"[^a-z0-9_-]+", "-", username.lower()).strip("-") or "agent"
 
 
-def discover(env=None, call=api, say=print):
-    """Look up everything .env needs, using only the bot token, and print suggested values.
+def overwrites(guild_id, bot_id, owner_id, role_id):
+    """Wanted permission overwrites per channel name: {name: [(id, type, allow, deny)]} (type 0 role, 1 member)."""
+    base = [(guild_id, 0, 0, VIEW), (bot_id, 1, BOT_ALLOW, 0), (owner_id, 1, OWNER_ALLOW, 0)]
+    return {HQ_NAME: base + [(role_id, 0, 0, VIEW)],
+            THREADS_NAME: base + [(role_id, 0, AGENT_THREADS_ALLOW, AGENT_THREADS_DENY)]}
 
-    The bot must already be in exactly one server (the invite step). Returns the suggested dict.
-    Read-only: it never changes anything in Discord."""
-    env = os.environ if env is None else env
+
+def read_env_file(path):
+    vals = {}
+    with open(path) as f:
+        for ln in f:
+            if "=" in ln and not ln.lstrip().startswith("#"):
+                k, _, v = ln.partition("=")
+                vals[k.strip()] = v.strip()
+    return vals
+
+
+def update_env_file(path, values):
+    """Set KEY=value lines in place (keeps comments, order and file owner); appends missing keys."""
+    with open(path) as f:
+        lines = f.read().splitlines()
+    done = set()
+    for n, ln in enumerate(lines):
+        k = ln.partition("=")[0].strip()
+        if "=" in ln and not ln.lstrip().startswith("#") and k in values:
+            lines[n] = f"{k}={values[k]}"
+            done.add(k)
+    lines += [f"{k}={v}" for k, v in values.items() if k not in done]
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def setup(out, env=None, call=api, say=print, run_init=True):
+    """Discord side of the setup with only the bot token, safe to run again (reuses by name):
+    role `agents` for the agent bots, channels gdpr-hq and gdpr-threads with permissions, IDs into .env,
+    then init (key + secrets folder). Prints a PASS/FAIL list; returns True if nothing failed."""
+    env_path = os.path.join(out, ".env")
+    if not os.path.exists(env_path):
+        raise SystemExit(f"{env_path} not found: copy .env.example to .env first (README step B1)")
+    fileenv = read_env_file(env_path)
+    env = dict(os.environ if env is None else env, **{k: v for k, v in fileenv.items() if v})
     token = env.get("GDPR_TOKEN", "").strip()
     if not token:
-        raise SystemExit("GDPR_TOKEN is empty in .env (README steps A2 and B1)")
+        raise SystemExit("GDPR_TOKEN is empty in .env (README step B1)")
+    results = []
+
+    def check(ok, what):
+        results.append(ok)
+        say(("PASS  " if ok else "FAIL  ") + what)
+        return ok
+
     st, me = call(token, "GET", "/users/@me")
     if st != 200:
         raise SystemExit(f"Discord rejected the token (HTTP {st}). Check GDPR_TOKEN in .env (README step A1).")
-    say(f"bot: {me['username']} (id {me['id']})")
     st, guilds = call(token, "GET", "/users/@me/guilds")
     if st != 200 or not guilds:
         raise SystemExit("The bot is not in any server yet. Open the invite link (README step A3): "
@@ -510,28 +558,92 @@ def discover(env=None, call=api, say=print):
         raise SystemExit("The bot is in more than one server: " + ", ".join(g["name"] for g in guilds)
                          + ". Remove it from the others (GDPR serves one server).")
     gid = guilds[0]["id"]
+    say(f"bot {me['username']} in server {guilds[0]['name']}")
     st, guild = call(token, "GET", f"/guilds/{gid}")
-    owner = guild.get("owner_id") if st == 200 else None
-    say(f"server: {guilds[0]['name']} (id {gid}), owner id {owner}")
-    st, chans = call(token, "GET", f"/guilds/{gid}/channels")
-    text = [c for c in (chans or []) if c.get("type") == 0]
-    say("text channels:" + "".join(f"\n  #{c['name']}  id {c['id']}" for c in text))
+    owner = env.get("OWNER_ID") or (guild or {}).get("owner_id")
+    check(bool(owner), f"owner: {owner} ({'from .env' if env.get('OWNER_ID') else 'server owner'})")
+
+    # agents: AGENT_IDS from .env, otherwise every other bot in the server
     st, members = call(token, "GET", f"/guilds/{gid}/members?limit=1000")
-    bots = []
-    if st == 200:
-        bots = [m["user"] for m in members if m["user"].get("bot") and m["user"]["id"] != me["id"]]
-        say("other bots (agents):" + ("".join(f"\n  {b['username']}  id {b['id']}" for b in bots) or " none"))
+    members = members if st == 200 else []
+    if env.get("AGENT_IDS"):
+        agents = {}
+        for part in env["AGENT_IDS"].split(","):
+            n, _, i = part.partition("=")
+            if i.strip():
+                agents.setdefault(i.strip(), n.strip())
     else:
-        say("could not list members (turn on Server Members Intent for the bot, or copy agent IDs by hand)")
-    by_name = {c["name"]: c["id"] for c in text}
-    out = {"OWNER_ID": owner or "<server owner user id>",
-           "HQ_ID": by_name.get(HQ_NAME, f"<id of the HQ channel; no channel named {HQ_NAME}>"),
-           "CHATS_ID": by_name.get(THREADS_NAME, f"<id of the threads channel; no channel named {THREADS_NAME}>"),
-           "AGENT_IDS": ",".join(f"{env_name(b['username'])}={b['id']}" for b in bots) or "<name=id,...>"}
-    say("\nSuggested .env values (check them, then copy into .env):")
-    for k in ("OWNER_ID", "HQ_ID", "CHATS_ID", "AGENT_IDS"):
-        say(f"{k}={out[k]}")
-    return out
+        agents = {m["user"]["id"]: env_name(m["user"]["username"]) for m in members
+                  if m["user"].get("bot") and m["user"]["id"] != me["id"]}
+    if not check(bool(agents), f"agent bots found: {', '.join(agents.values()) or 'none'}"):
+        say("      invite your agent bots (A4) and turn on Server Members Intent (A1), or set AGENT_IDS in .env")
+
+    # role
+    st, roles = call(token, "GET", f"/guilds/{gid}/roles")
+    roles = roles if st == 200 else []
+    role = next((r for r in roles if r["name"] == ROLE_NAME), None)
+    if role is None:
+        st, role = call(token, "POST", f"/guilds/{gid}/roles", {"name": ROLE_NAME, "permissions": "0"})
+        role = role if st in (200, 201) else None
+    if not check(role is not None, f"role {ROLE_NAME}" + (f" (id {role['id']})" if role else
+                                                          ": could not create it (needs Manage Roles, A3)")):
+        return False
+    by_id = {m["user"]["id"]: m for m in members}
+    for aid, name in agents.items():
+        if role["id"] in by_id.get(aid, {}).get("roles", []):
+            check(True, f"{name} has role {ROLE_NAME}")
+            continue
+        st, _ = call(token, "PUT", f"/guilds/{gid}/members/{aid}/roles/{role['id']}")
+        check(st in (200, 204), f"give {name} role {ROLE_NAME}" + ("" if st in (200, 204) else
+                                                                 f" (HTTP {st}; is the bot in the server?)"))
+
+    # report agents that could read every private thread (never changed silently)
+    perms = {r["id"]: int(r.get("permissions", 0)) for r in roles}
+    if not members:
+        check(False, "could not list members to check agent roles: turn on Server Members Intent (A1)")
+    for aid, name in agents.items():
+        p = perms.get(gid, 0)
+        for rid in by_id.get(aid, {}).get("roles", []):
+            p |= perms.get(rid, 0)
+        if aid in by_id:
+            check(not p & (MANAGE_THREADS | ADMIN), f"{name} has no Manage Threads/Administrator"
+                  + ("" if not p & (MANAGE_THREADS | ADMIN) else ": remove it from that role (A4), or kick will not work"))
+
+    # channels
+    st, chans = call(token, "GET", f"/guilds/{gid}/channels")
+    by_name = {c["name"]: c for c in (chans or []) if c.get("type") == 0}
+    ids = {}
+    for name, ows in overwrites(gid, me["id"], owner, role["id"]).items():
+        body = [{"id": i, "type": t, "allow": str(a), "deny": str(d)} for i, t, a, d in ows if i]
+        ch = by_name.get(name)
+        if ch is None:
+            st, ch = call(token, "POST", f"/guilds/{gid}/channels", {"name": name, "type": 0, "permission_overwrites": body})
+            if not check(st in (200, 201), f"create #{name}" + ("" if st in (200, 201) else f" (HTTP {st}; needs Manage Channels, A3)")):
+                continue
+        else:
+            bad = [o for o in body if call(token, "PUT", f"/channels/{ch['id']}/permissions/{o['id']}",
+                                            {"type": o["type"], "allow": o["allow"], "deny": o["deny"]})[0] not in (200, 204)]
+            if not check(not bad, f"permissions on existing #{name}" + (f" ({len(bad)} failed; needs Manage Roles, A3)" if bad else "")):
+                continue
+        ids[name] = ch["id"]
+        check(True, f"#{name} ready (id {ch['id']})")
+
+    values = {}
+    if not fileenv.get("OWNER_ID") and owner:
+        values["OWNER_ID"] = owner
+    if HQ_NAME in ids:
+        values["HQ_ID"] = ids[HQ_NAME]
+    if THREADS_NAME in ids:
+        values["CHATS_ID"] = ids[THREADS_NAME]
+    if not fileenv.get("AGENT_IDS") and agents:
+        values["AGENT_IDS"] = ",".join(f"{n}={i}" for i, n in agents.items())
+    if values:
+        update_env_file(env_path, values)
+        check(True, "wrote to .env: " + ", ".join(values))
+    if all(results) and run_init:
+        init(out, dict(env, **values))
+    say("\nsetup " + ("complete" if all(results) else "INCOMPLETE: fix the FAIL lines and run setup again"))
+    return all(results)
 
 
 if __name__ == "__main__":
@@ -542,7 +654,6 @@ if __name__ == "__main__":
     if cmd == ["invite"]:
         bid = bot_id_from_token(os.environ.get("GDPR_TOKEN", ""))
         sys.exit(print(invite_url(bid)) if bid else "GDPR_TOKEN is empty or not a bot token")
-    if cmd == ["discover"]:
-        discover()
-        sys.exit(0)
+    if cmd == ["setup"]:
+        sys.exit(0 if setup(sys.argv[2] if len(sys.argv) > 2 else "/out") else 1)
     sys.exit(main())

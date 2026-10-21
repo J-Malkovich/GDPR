@@ -127,10 +127,11 @@ Nothing appears in chat. Then tell the agent in a thread which file name to pick
 
 Setup has two parts:
 
-- **Part A needs a person** logged in to Discord. It takes about 10 minutes: you create the
-  bot, invite it, add your agent bots and set up the two channels.
+- **Part A needs a person** logged in to Discord, because Discord only lets a person create a
+  bot and invite bots to a server. It takes about 5 minutes.
 - **Part B can be done by anyone:** you, or an AI agent with a shell on the machine that will
-  run GDPR. Every step is a command with the result you should see.
+  run GDPR. One command sets up Discord (role, channels, permissions), writes the IDs into
+  `.env` and creates the encryption key. Every step says what you should see.
 
 If you hand part B to an agent, give it this README and tell it where the bot token is. Give the
 token as a file or through your secret store, never in a chat message.
@@ -154,10 +155,9 @@ What you need:
 3. Open the **Bot** tab:
    - Click **Reset Token** and copy the token. Treat it like a password: anyone with the
      token controls the bot.
-   - Under **Privileged Gateway Intents**, turn on **Message Content Intent**. GDPR needs it to
-     read messages.
-   - Also turn on **Server Members Intent**. It is optional: it lets step B3 find your agent
-     bots' IDs for you.
+   - Under **Privileged Gateway Intents**, turn on **Message Content Intent** (GDPR reads
+     messages) and **Server Members Intent** (setup finds your agent bots and checks their
+     roles).
    - Click **Save Changes**.
 
 ### A2. Keep the token safe
@@ -165,49 +165,31 @@ What you need:
 Keep the token somewhere safe for now. It goes into the `.env` file in step B1. If an agent does
 part B, give it the token as a file or through your secret store.
 
-### A3. Invite the bot
+### A3. Invite GDPR
 
 Open this link, with `APPLICATION_ID` replaced by the ID from A1:
 
 ```
-https://discord.com/oauth2/authorize?client_id=APPLICATION_ID&scope=bot+applications.commands&permissions=360777321472
+https://discord.com/oauth2/authorize?client_id=APPLICATION_ID&scope=bot+applications.commands&permissions=395405495312
 ```
 
 Choose your server and click **Authorize**. The link gives GDPR these permissions:
 
 - **View Channel, Send Messages, Read Message History:** to read and answer messages.
-- **Create Private Threads, Send Messages in Threads:** to open threads.
-- **Manage Threads:** to add and remove members.
+- **Create Private Threads, Send Messages in Threads, Manage Threads:** to open threads and
+  add or remove members.
+- **Manage Channels, Manage Roles, Create Public Threads:** only for the setup in B3, which
+  creates the channels and the role and sets their permissions. Discord only lets a bot set
+  permissions it has itself. You can remove these three after setup (B6).
 
 ### A4. Add your agent bots
 
 1. Invite each agent bot to the server with its own invite link.
 2. In each agent bot's own application, turn on **Message Content Intent**. Without it, the
    agent is added to threads but cannot read them.
-3. Create a role named `agents` (Server Settings > Roles) and give it to every agent bot. Step
-   A5 uses it to set their permissions in one place.
-4. Make sure no role an agent has includes **Manage Threads** or **Administrator**. A bot with
-   Manage Threads can read every private thread, even ones it was kicked from, so `kick`
-   would not work on it.
-5. If your agents run on a framework that opens its own thread whenever the bot is mentioned,
-   turn that option off. Otherwise you get a second thread next to GDPR's.
-
-### A5. Create the two channels
-
-Create two text channels, with exactly these names so step B3 can find them:
-
-1. **`gdpr-hq`**, for you and GDPR.
-   - Edit Channel > Permissions: add the `agents` role and deny **View Channel**.
-   - Agents then cannot post in HQ, so they give their commands inside threads. If you want
-     agents to start threads by mentioning each other in HQ, allow View Channel and Send
-     Messages for them instead.
-2. **`gdpr-threads`**, where the private threads live.
-   - Edit Channel > Permissions: add the `agents` role.
-   - **Allow:** View Channel, Read Message History, Send Messages in Threads.
-   - **Deny:** Send Messages, Create Public Threads, Create Private Threads and Manage Threads.
-   - This way agents only talk inside the threads GDPR puts them in.
-
-If either channel is private, also add the GDPR bot to it with View Channel allowed.
+3. If your agents run on a framework that opens its own thread whenever the bot is mentioned,
+   turn that option off in the agent's settings. Otherwise you get a second thread next to
+   GDPR's.
 
 Part A is done. Do part B yourself, or tell your agent: "Set up GDPR by following part B of
 README.md. The bot token is in `<where you put it>`."
@@ -231,8 +213,8 @@ cp .env.example .env
 repository page and unpack it.)
 
 Open `.env` and set `GDPR_TOKEN=` to the bot token. Use no quotes and no spaces around `=`.
-Leave the other values empty for now. Never commit or share `.env`; it is already in
-`.gitignore`.
+Leave the other values empty; setup fills them in. Never commit or share `.env`; it is already
+in `.gitignore`.
 
 ### B2. Build
 
@@ -243,74 +225,55 @@ docker compose build
 You should see the build finish without errors. The build runs GDPR's tests, so a broken
 download fails here.
 
-### B3. Look up the IDs
-
-This asks Discord, with the bot's token, for everything `.env` still needs. It only reads; it
-changes nothing in Discord.
-
-```
-docker run --rm --env-file .env gdpr:local python gdpr.py discover
-```
-
-You should see the bot's name, your server, its text channels, the other bots, and at the end:
-
-```
-Suggested .env values (check them, then copy into .env):
-OWNER_ID=...
-HQ_ID=...
-CHATS_ID=...
-AGENT_IDS=...
-```
-
-What the values mean:
-
-- `OWNER_ID` is suggested from the **server owner**. Only this person can use the slash
-  commands and `/secret`. **If the person who will use GDPR is not the server owner, replace it
-  with their user ID**, otherwise they are locked out.
-- `HQ_ID` is the `gdpr-hq` channel, and `CHATS_ID` is the `gdpr-threads` channel.
-- `AGENT_IDS` lists the other bots in the server as `name=id`. The names are what you type in
-  commands (`@GDPR add dev`). Rename them if you like, remove any bot that is not an agent, and
-  add extra names for the same ID if you want aliases (`dev=123...,coder=123...`).
-
-If a value shows `<...>`, GDPR could not find it. Either a channel name doesn't match, or Server
-Members Intent is off. Fill it in by hand: in Discord, turn on **User Settings > Advanced >
-Developer Mode**, then right-click the user or channel and choose **Copy ID**. An agent should
-ask the person for these IDs.
-
-### B4. Fill in `.env`
-
-Copy the four suggested lines into `.env`. Optionally set:
-
-- `OWNER_NAME`: the owner's name as it should appear in GDPR's messages.
-- `RESTRICTED_AGENTS`: names from `AGENT_IDS` that only the owner may bring into threads.
-
-### B5. Create the key and the secrets folder
+### B3. Run setup
 
 Linux/macOS:
 
 ```
-docker run --rm -u 0 --env-file .env -v "$PWD:/out" gdpr:local python gdpr.py init /out
+docker run --rm -u 0 --env-file .env -v "$PWD:/out" gdpr:local python gdpr.py setup /out
 ```
 
 Windows PowerShell:
 
 ```
-docker run --rm -u 0 --env-file .env -v "${PWD}:/out" gdpr:local python gdpr.py init /out
+docker run --rm -u 0 --env-file .env -v "${PWD}:/out" gdpr:local python gdpr.py setup /out
 ```
 
-You should see `created gdpr_age_key` and `secrets folder ready`. If it says a value is
-missing, go back to B4.
+Setup uses only the bot token. It:
 
-This creates:
+1. finds the server owner and your agent bots (every other bot in the server)
+2. creates a role `agents` and gives it to the agent bots
+3. creates the channels `#gdpr-hq` and `#gdpr-threads` with the right permissions (see "What
+   setup creates" below)
+4. checks that no agent has **Manage Threads** or **Administrator**, which would let it read
+   every private thread even after a kick. It reports this but changes nothing.
+5. writes `OWNER_ID`, `HQ_ID`, `CHATS_ID` and `AGENT_IDS` into `.env`. Values you already
+   filled in are kept.
+6. creates the encryption key `gdpr_age_key` (plus `gdpr_age_key.pub`) and the `secrets`
+   folder
 
-- `gdpr_age_key`, the private key for encrypted secrets
-- `gdpr_age_key.pub`, its public key
-- the `secrets` folder
+You should see a list of `PASS` lines and at the end `setup complete`.
 
-It never overwrites an existing key. **Back up `gdpr_age_key`.** Without it, encrypted secrets
-cannot be read. Never share it.
+A `FAIL` line says what is wrong and which step fixes it. Fix it and run setup again: it reuses
+the role and channels that already exist, so it is safe to run as often as needed. Never
+overwriting the key also makes it safe.
 
-### B6. Start
+**Back up `gdpr_age_key`.** Without it, encrypted secrets cannot be read. Never share it.
+
+### B4. Check `.env`
+
+Open `.env` and check what setup wrote:
+
+- `OWNER_ID` is the **server owner** unless you set it before. Only this person can use the
+  slash commands and `/secret`. **If someone else will use GDPR, put their user ID here**,
+  otherwise they are locked out, and run setup again so they get access to the channels.
+- `AGENT_IDS` lists the agent bots as `name=id`. The names are what you type in commands
+  (`@GDPR add dev`). Rename them if you like, remove any bot that is not an agent, and add
+  extra names for the same ID if you want aliases (`dev=123...,coder=123...`).
+- Optional: set `OWNER_NAME` (your name in GDPR's messages) and `RESTRICTED_AGENTS` (agents
+  only the owner may bring into threads).
+
+### B5. Start
 
 ```
 docker compose up -d
@@ -319,7 +282,7 @@ docker compose logs gdpr
 
 You should see `GDPR ready as <bot name>`. Slash commands can take a minute to appear.
 
-### B7. Check it works
+### B6. Check it works
 
 Only the owner can give GDPR its first commands. An agent doing the setup should ask the owner
 to do this:
@@ -329,11 +292,29 @@ to do this:
 2. Type `/secret`, enter a name and a value, and submit. A file with that name should appear in
    the `secrets` folder (`sudo ls secrets` on Linux).
 
-When both work, setup is done. An agent should report back to the owner with:
+When both work, setup is done. Optionally remove **Manage Channels**, **Manage Roles** and
+**Create Public Threads** from GDPR's role (Server Settings > Roles > GDPR). Add them back if
+you ever run setup again.
+
+An agent should report back to the owner with:
 
 - that GDPR is running
+- any `FAIL` lines it could not fix
 - the public key from `gdpr_age_key.pub`, needed for the optional plugin below
 - a reminder to back up `gdpr_age_key`
+
+### What setup creates
+
+For reference, or if you prefer to do it by hand:
+
+- **Role `agents`:** no permissions of its own. It is given to every agent bot.
+- **`#gdpr-hq`:** hidden from `@everyone` and from `agents`. Visible to the owner and GDPR.
+  Agents give their commands inside threads instead.
+- **`#gdpr-threads`:** hidden from `@everyone`. The owner and GDPR can see it.
+  - `agents` are **allowed** View Channel, Read Message History and Send Messages in Threads.
+  - `agents` are **denied** Send Messages, Create Public Threads, Create Private Threads and
+    Manage Threads.
+  - So agents only talk inside the private threads GDPR puts them in.
 
 ---
 
@@ -355,7 +336,7 @@ Install it on the computer where you use Discord. You need git and Node.js.
 - **Linux/macOS:** `GDPR_PUBKEY=age1... bash vencord-plugin/install.sh`
 - **Windows:** `powershell -ExecutionPolicy Bypass -File vencord-plugin\install.ps1 -PublicKey age1...`
 
-Replace `age1...` with the public key that init printed in B5 (it is also in `gdpr_age_key.pub`).
+Replace `age1...` with the public key that setup printed in B3 (it is also in `gdpr_age_key.pub`).
 The public key is safe to share.
 
 After installing:
@@ -400,28 +381,31 @@ on the host. When the owner tells an agent a file name, the agent should:
 
 ## Troubleshooting
 
-- **discover says "Discord rejected the token".** `GDPR_TOKEN` in `.env` is wrong or was
-  reset. Copy a fresh token (A1).
-- **discover says "The bot is not in any server yet".** Do the invite (A3). discover prints the
-  link.
+- **setup says "Discord rejected the token".** `GDPR_TOKEN` in `.env` is wrong or was reset.
+  Copy a fresh token (A1).
+- **setup says "The bot is not in any server yet".** Do the invite (A3). setup prints the link.
+- **setup says "FAIL role agents" or "FAIL create #...".** GDPR is missing Manage Roles or
+  Manage Channels. Invite it again with the link from A3, then run setup again.
+- **setup says "FAIL agent bots found: none".** Invite your agent bots (A4) and turn on Server
+  Members Intent (A1), or set `AGENT_IDS` in `.env` by hand.
 - **The bot is online but ignores my messages.** Message Content Intent is off (A1), the message
   did not come from the owner or a listed agent, or it was written outside `#gdpr-hq` and the
-  threads in `#gdpr-threads`.
+  threads in `#gdpr-threads`. After changing `.env`, restart with `docker compose up -d`.
 - **The log says `error: discord refused (403)`.** GDPR is missing a permission in that
-  channel. Check A3, and add the bot to private channels (A5).
-- **An agent is added to a thread but doesn't respond.** The agent cannot see `#gdpr-threads`
-  (A5), or its own Message Content Intent is off (A4).
+  channel. Run setup again (B3).
+- **An agent is added to a thread but doesn't respond.** The agent lacks the `agents` role
+  (run setup again), or its own Message Content Intent is off (A4).
 - **A kicked agent still answers.** It has Manage Threads or Administrator through one of its
-  roles (A4).
+  roles. Setup reports this as a FAIL line; remove the permission from that role.
 - **Every mention creates two threads.** The agent's framework opens its own thread on
-  mentions (A4, point 5).
+  mentions (A4, point 3).
 - **"owner only: ... can only be called by the owner".** That agent is in `RESTRICTED_AGENTS`.
 - **"that is not a thread in the threads channel".** The thread is not under the channel set in
   `CHATS_ID`.
 - **`/secret` says "could not decrypt".** The plugin uses a different public key than the one
   in `gdpr_age_key.pub`. Reinstall the plugin with the right key.
-- **init says `gdpr_age_key` is a folder.** The bot was started before init, so Docker created
-  an empty folder. Delete the folder and run init again (B5).
+- **setup says `gdpr_age_key` is a folder.** The bot was started before setup, so Docker
+  created an empty folder. Delete the folder and run setup again (B3).
 - **The bot crashes at start with "missing env".** A value in `.env` is empty. The message
   names which one.
 

@@ -544,61 +544,150 @@ class Init(unittest.TestCase):
         self.assertIn(f"permissions={W.INVITE_PERMISSIONS}", W.invite_url("1"))
 
 
-class Discover(unittest.TestCase):
-    def fake(self, members_status=200, guilds=None, named=True):
-        calls = []
-        chans = [{"id": "500", "name": "general", "type": 0}, {"id": "501", "name": "voice", "type": 2}]
-        if named:
-            chans += [{"id": "503", "name": "gdpr-hq", "type": 0}, {"id": "504", "name": "gdpr-threads", "type": 0}]
-        guilds = [{"id": "77", "name": "Test"}] if guilds is None else guilds
+class FakeDiscord:
+    """In-memory stand-in for the few REST endpoints `setup` uses."""
+    def __init__(self, members_ok=True, perms_ok=True, guilds=None, agent_perms=0):
+        self.guilds = [{"id": "77", "name": "Test"}] if guilds is None else guilds
+        self.members_ok, self.perms_ok = members_ok, perms_ok
+        self.roles = [{"id": "77", "name": "@everyone", "permissions": "0"},
+                      {"id": "80", "name": "power", "permissions": str(agent_perms)}]
+        self.members = {"9": {"user": {"id": "9", "username": "gdpr", "bot": True}, "roles": []},
+                        "1": {"user": {"id": "1", "username": "alex"}, "roles": []},
+                        "11": {"user": {"id": "11", "username": "Dev Bot", "bot": True}, "roles": ["80"]}}
+        self.channels = [{"id": "500", "name": "general", "type": 0}]
+        self.calls = []
 
-        def call(token, method, path, body=None):
-            calls.append((method, path, body))
-            if path == "/users/@me":
-                return 200, {"id": "9", "username": "gdpr"}
-            if path == "/users/@me/guilds":
-                return 200, guilds
-            if path == "/guilds/77":
-                return 200, {"owner_id": "1"}
-            if path == "/guilds/77/channels":
-                return 200, list(chans)
-            if path.startswith("/guilds/77/members"):
-                if members_status != 200:
-                    return members_status, {"message": "Missing Access"}
-                return 200, [{"user": {"id": "9", "username": "gdpr", "bot": True}},
-                             {"user": {"id": "1", "username": "alex"}},
-                             {"user": {"id": "11", "username": "Dev Bot", "bot": True}}]
-            raise AssertionError(path)
-        return call, calls
+    def __call__(self, token, method, path, body=None):
+        self.calls.append((method, path, body))
+        if path == "/users/@me":
+            return 200, {"id": "9", "username": "gdpr"}
+        if path == "/users/@me/guilds":
+            return 200, self.guilds
+        if path == "/guilds/77":
+            return 200, {"owner_id": "1"}
+        if path.startswith("/guilds/77/members?"):
+            return (200, list(self.members.values())) if self.members_ok else (403, {})
+        if path == "/guilds/77/roles":
+            if method == "POST":
+                if not self.perms_ok:
+                    return 403, {}
+                self.roles.append({"id": "90", "name": body["name"], "permissions": "0"})
+                return 200, self.roles[-1]
+            return 200, self.roles
+        if method == "PUT" and "/roles/" in path:
+            uid, rid = path.split("/")[4], path.split("/")[6]
+            self.members[uid]["roles"].append(rid)
+            return 204, None
+        if path == "/guilds/77/channels":
+            if method == "POST":
+                if not self.perms_ok:
+                    return 403, {}
+                ch = {"id": str(600 + len(self.channels)), "name": body["name"], "type": 0,
+                      "permission_overwrites": body["permission_overwrites"]}
+                self.channels.append(ch)
+                return 201, ch
+            return 200, self.channels
+        if method == "PUT" and "/permissions/" in path:
+            return (204, None) if self.perms_ok else (403, {})
+        raise AssertionError((method, path))
 
-    def test_suggests_env(self):
-        call, calls = self.fake()
-        out = W.discover({"GDPR_TOKEN": "t"}, call=call, say=lambda *_: None)
-        self.assertEqual(out, {"OWNER_ID": "1", "HQ_ID": "503", "CHATS_ID": "504", "AGENT_IDS": "dev-bot=11"})
-        self.assertFalse([c for c in calls if c[0] != "GET"])  # read-only
 
-    def test_missing_channels_are_placeholders(self):
-        call, _ = self.fake(named=False)
-        out = W.discover({"GDPR_TOKEN": "t"}, call=call, say=lambda *_: None)
-        self.assertTrue(out["HQ_ID"].startswith("<") and out["CHATS_ID"].startswith("<"))
+class Setup(unittest.TestCase):
+    TOKEN = "dG9rZW4.x.y"
 
-    def test_members_intent_missing_still_works(self):
-        call, _ = self.fake(members_status=403)
-        out = W.discover({"GDPR_TOKEN": "t"}, call=call, say=lambda *_: None)
-        self.assertEqual(out["AGENT_IDS"], "<name=id,...>")
-        self.assertEqual(out["HQ_ID"], "503")
+    def run_setup(self, fake, env_text=None, **kw):
+        import contextlib
+        import io
+        import tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d)
+        with open(os.path.join(d, ".env"), "w") as f:
+            f.write(env_text or f"# comment\nGDPR_TOKEN={self.TOKEN}\nOWNER_ID=\nHQ_ID=\nCHATS_ID=\nAGENT_IDS=\n")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ok = W.setup(d, env={}, call=fake, say=print, run_init=False, **kw)
+        return ok, W.read_env_file(os.path.join(d, ".env")), out.getvalue(), d
+
+    def test_fresh_server(self):
+        fake = FakeDiscord()
+        ok, env, out, d = self.run_setup(fake)
+        self.assertTrue(ok, out)
+        self.assertEqual(env["OWNER_ID"], "1")
+        self.assertEqual(env["AGENT_IDS"], "dev-bot=11")
+        hq = next(c for c in fake.channels if c["name"] == "gdpr-hq")
+        th = next(c for c in fake.channels if c["name"] == "gdpr-threads")
+        self.assertEqual((env["HQ_ID"], env["CHATS_ID"]), (hq["id"], th["id"]))
+        self.assertIn("90", fake.members["11"]["roles"])  # agents role given to the agent bot
+        ow = {o["id"]: o for o in th["permission_overwrites"]}
+        self.assertEqual(int(ow["90"]["allow"]), W.AGENT_THREADS_ALLOW)
+        self.assertTrue(int(ow["90"]["deny"]) & W.MANAGE_THREADS)
+        self.assertEqual(int(ow["77"]["deny"]), W.VIEW)  # @everyone cannot see it
+        self.assertEqual(int(ow["9"]["allow"]), W.BOT_ALLOW)
+        self.assertEqual(int({o["id"]: o for o in hq["permission_overwrites"]}["90"]["deny"]), W.VIEW)
+        with open(os.path.join(d, ".env")) as f:
+            self.assertTrue(f.read().startswith("# comment\n"))  # comments kept
+
+    def test_second_run_reuses_everything(self):
+        fake = FakeDiscord()
+        self.run_setup(fake)
+        n_channels, n_roles = len(fake.channels), len(fake.roles)
+        fake.calls.clear()
+        ok, _, out, _ = self.run_setup(fake)
+        self.assertTrue(ok, out)
+        self.assertEqual((len(fake.channels), len(fake.roles)), (n_channels, n_roles))
+        self.assertFalse([c for c in fake.calls if c[0] == "POST"])
+
+    def test_existing_env_values_kept(self):
+        fake = FakeDiscord()
+        env_text = f"GDPR_TOKEN={self.TOKEN}\nOWNER_ID=5\nAGENT_IDS=coder=11\n"
+        ok, env, out, _ = self.run_setup(fake, env_text)
+        self.assertTrue(ok, out)
+        self.assertEqual((env["OWNER_ID"], env["AGENT_IDS"]), ("5", "coder=11"))
+        th = next(c for c in fake.channels if c["name"] == "gdpr-threads")
+        self.assertIn("5", {o["id"] for o in th["permission_overwrites"]})  # configured owner gets access
+
+    def test_missing_permissions_fail(self):
+        ok, env, out, _ = self.run_setup(FakeDiscord(perms_ok=False))
+        self.assertFalse(ok)
+        self.assertIn("FAIL  role agents", out)
+        self.assertEqual(env["HQ_ID"], "")
+
+    def test_agent_with_manage_threads_reported(self):
+        ok, _, out, _ = self.run_setup(FakeDiscord(agent_perms=W.MANAGE_THREADS))
+        self.assertFalse(ok)
+        self.assertIn("FAIL  dev-bot has no Manage Threads/Administrator", out)
+
+    def test_members_intent_off(self):
+        ok, _, out, _ = self.run_setup(FakeDiscord(members_ok=False))
+        self.assertFalse(ok)
+        self.assertIn("FAIL  agent bots found: none", out)
+        fake = FakeDiscord(members_ok=False)
+        ok, _, out, _ = self.run_setup(fake, f"GDPR_TOKEN={self.TOKEN}\nAGENT_IDS=dev=11\n")
+        self.assertIn("PUT", {c[0] for c in fake.calls})  # still assigns the role from AGENT_IDS
+        self.assertIn("Server Members Intent", out)
 
     def test_not_invited_or_many_servers(self):
         for guilds in ([], [{"id": "77", "name": "a"}, {"id": "78", "name": "b"}]):
-            call, _ = self.fake(guilds=guilds)
             with self.assertRaises(SystemExit):
-                W.discover({"GDPR_TOKEN": "t"}, call=call, say=lambda *_: None)
+                self.run_setup(FakeDiscord(guilds=guilds))
         with self.assertRaises(SystemExit):
-            W.discover({"GDPR_TOKEN": ""}, call=call, say=lambda *_: None)
+            self.run_setup(FakeDiscord(), "GDPR_TOKEN=\n")
 
-    def test_invite_has_no_manage_channels(self):
-        self.assertFalse(W.INVITE_PERMISSIONS & (1 << 4))
-        self.assertEqual(W.INVITE_PERMISSIONS, 360777321472)
+    def test_init_runs_with_new_values(self):
+        from unittest import mock
+        import contextlib, io, tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d)
+        with open(os.path.join(d, ".env"), "w") as f:
+            f.write(f"GDPR_TOKEN={self.TOKEN}\nOWNER_ID=\nHQ_ID=\nCHATS_ID=\nAGENT_IDS=\n")
+        with mock.patch.object(W, "init") as init, contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(W.setup(d, env={}, call=FakeDiscord()))
+        W.load_config(init.call_args[0][1])  # the merged values form a complete config
+
+    def test_invite_permissions(self):
+        self.assertEqual(W.INVITE_PERMISSIONS, 360777321472 | W.CREATE_PUBLIC | W.MANAGE_CHANNELS | W.MANAGE_ROLES)
+        for p in (W.AGENT_THREADS_ALLOW, W.AGENT_THREADS_DENY, W.BOT_ALLOW, W.OWNER_ALLOW):
+            self.assertEqual(p & ~W.INVITE_PERMISSIONS, 0)  # the bot only sets permissions it holds
 
 
 class Restricted(unittest.TestCase):
