@@ -1,0 +1,13 @@
+services:
+  gdpr:
+    build: .
+    image: gdpr:local
+    container_name: gdpr
+    restart: unless-stopped
+    env_file: .env
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ${SECRET_INBOX_DIR:-./secrets}:/inbox
+      - ./gdpr_age_key:/run/secrets/gdpr_age_key:ro

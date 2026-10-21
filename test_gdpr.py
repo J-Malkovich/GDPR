@@ -1,0 +1,605 @@
+import asyncio
+import os
+import sys
+import types
+import unittest
+from unittest.mock import AsyncMock, MagicMock
+
+try:
+    import discord
+except ImportError:  # minimal stand-in for the few names gdpr.py uses
+    discord = types.ModuleType("discord")
+
+    class AllowedMentions:
+        def __init__(self, users=False, roles=False, everyone=False, replied_user=False):
+            self.users, self.roles, self.everyone = users, roles, everyone
+
+        @classmethod
+        def none(cls):
+            return cls(users=False)
+
+    class Object:
+        def __init__(self, id):
+            self.id = id
+
+    class HTTPException(Exception):
+        def __init__(self, status=500):
+            self.status = status
+
+    discord.AllowedMentions, discord.Object, discord.HTTPException = AllowedMentions, Object, HTTPException
+    discord.ChannelType = types.SimpleNamespace(private_thread="private_thread")
+    sys.modules["discord"] = discord
+
+import gdpr as W
+
+OWNER, HQ, CHATS, BOT = 1, 100, 200, 9
+AGENTS = {"dev": 11, "ops": 12, "qa": 13}
+CFG = dict(token="x", owner_id=OWNER, hq_id=HQ, chats_id=CHATS, agents=AGENTS,
+           owner_name="Alex", owner_aliases={"owner", "alex"})
+ENV = dict(GDPR_TOKEN="t", OWNER_ID="1", HQ_ID="100", CHATS_ID="200",
+           AGENT_IDS="dev=11,ops=12,qa=13")
+
+
+def run(c):
+    return asyncio.run(c)
+
+
+def make_guild():
+    g = MagicMock()
+    hq, chats, thread = MagicMock(), MagicMock(), MagicMock()
+    hq.send = AsyncMock()
+    thread.mention, thread.parent_id = "<#300>", CHATS
+    for m in ("send", "add_user", "remove_user", "edit"):
+        setattr(thread, m, AsyncMock())
+    chats.create_thread = AsyncMock(return_value=thread)
+    g.get_channel.side_effect = lambda i: {HQ: hq, CHATS: chats}.get(i)
+    g.get_thread.side_effect = lambda i: thread if i == 300 else None
+    g.fetch_channel = AsyncMock(return_value=None)  # uncached ids: Discord has nothing either
+    g.hq, g.chats, g.thread = hq, chats, thread
+    return g
+
+
+def make_msg(g, uid, content, channel_id=HQ, parent_id=None):
+    m = MagicMock()
+    m.channel.parent_id = parent_id
+    m.author.id, m.content, m.guild = uid, content, g
+    m.channel.id = channel_id
+    return m
+
+
+def handle(g, uid, content, channel_id=HQ, parent_id=None):
+    w = W.Gdpr(CFG, BOT)
+    run(w.handle_message(make_msg(g, uid, content, channel_id, parent_id)))
+    return g.hq.send.call_args[0][0] if g.hq.send.called else None
+
+
+class MentionAdd(unittest.TestCase):
+    def test_agent_mention_in_thread_adds(self):
+        g = make_guild()
+        m = make_msg(g, 12, "hey <@11> take over", channel_id=300, parent_id=CHATS)
+        m.channel.add_user = AsyncMock()
+        run(W.Gdpr(CFG, BOT).handle_message(m))
+        self.assertEqual([c.args[0].id for c in m.channel.add_user.call_args_list], [11])
+        self.assertFalse(g.hq.send.called)
+
+    def test_no_mention_no_add(self):
+        g = make_guild()
+        m = make_msg(g, 12, "plain chat", channel_id=300, parent_id=CHATS)
+        m.channel.add_user = AsyncMock()
+        run(W.Gdpr(CFG, BOT).handle_message(m))
+        self.assertFalse(m.channel.add_user.called)
+
+
+class Parsing(unittest.TestCase):
+    def test_open(self):
+        self.assertEqual(W.parse_command('<@9> open "Fix DNS" dev ops | please look', 9),
+                         ("open", "Fix DNS", ["dev", "ops"], "please look"))
+
+    def test_open_commas_and_at(self):
+        self.assertEqual(W.parse_command('<@!9> open "x" @Dev, ops | hi', 9)[2], ["dev", "ops"])
+
+    def test_kick_add_archive(self):
+        self.assertEqual(W.parse_command("<@9> kick <#300> Dev", 9), ("kick", 300, "dev"))
+        self.assertEqual(W.parse_command("<@9> add <#300> ops", 9), ("add", 300, "ops"))
+        self.assertEqual(W.parse_command("<@9> archive <#300>", 9), ("archive", 300))
+
+    def test_not_addressed(self):
+        self.assertIsNone(W.parse_command("open \"x\" dev | hi", 9))
+        self.assertIsNone(W.parse_command("<@10> kick <#300> dev", 9))
+
+    def test_garbage_gives_help(self):
+        self.assertEqual(W.parse_command("<@9> dance", 9), ("help",))
+
+    def test_slug(self):
+        self.assertEqual(W.slug("Fix DNS!! now"), "fix-dns-now")
+        self.assertEqual(W.slug("???"), "chat")
+        self.assertLessEqual(len(W.slug("a" * 100)), 40)
+
+    def test_config(self):
+        c = W.load_config(ENV)
+        self.assertEqual(c["agents"], AGENTS)
+        self.assertEqual(c["owner_id"], 1)
+
+    def test_config_missing(self):
+        with self.assertRaises(SystemExit) as e:
+            W.load_config({k: v for k, v in ENV.items() if k != "GDPR_TOKEN"})
+        self.assertIn("GDPR_TOKEN", str(e.exception))
+        with self.assertRaises(SystemExit):
+            W.load_config(dict(ENV, OWNER_ID="abc"))
+
+
+class Open(unittest.TestCase):
+    def test_agent_open(self):
+        g = make_guild()
+        out = handle(g, 11, '<@9> open "Fix DNS" dev ops | please look')
+        kw = g.chats.create_thread.call_args.kwargs
+        self.assertEqual(kw["name"], "fix-dns")
+        self.assertEqual(kw["type"], discord.ChannelType.private_thread)
+        self.assertFalse(kw["invitable"])
+        self.assertEqual(kw["auto_archive_duration"], 4320)
+        self.assertNotIn("message", kw)  # no anchor message
+        added = {c.args[0].id for c in g.thread.add_user.call_args_list}
+        self.assertEqual(added, {1, 11, 12})  # owner always in + requester + ops
+        g.thread.send.assert_called_once()
+        text, am = g.thread.send.call_args[0][0], g.thread.send.call_args.kwargs["allowed_mentions"]
+        self.assertIn("From <@11>: please look", text)
+        self.assertEqual({u.id for u in am.users}, {11, 12})
+        self.assertFalse(am.everyone)
+        self.assertFalse(am.roles)
+        self.assertIn("<#300>", out)
+        self.assertNotIn("<@", out)  # pointer uses plain names
+        self.assertEqual(g.hq.send.call_args.kwargs["allowed_mentions"].users, False)
+
+    def test_relay_does_not_ping_other_agents_or_requester_non_target(self):
+        g = make_guild()
+        handle(g, 11, '<@9> open "t" ops | hey <@13> @everyone')
+        am = g.thread.send.call_args.kwargs["allowed_mentions"]
+        self.assertEqual({u.id for u in am.users}, {12})  # only target agent may ping
+        self.assertFalse(am.everyone)
+
+    def test_owner_added_not_pinged(self):
+        g = make_guild()
+        handle(g, OWNER, "<@11> <@12> discuss backups")
+        self.assertEqual({c.args[0].id for c in g.thread.add_user.call_args_list}, {1, 11, 12})
+        am = g.thread.send.call_args.kwargs["allowed_mentions"]
+        self.assertEqual({u.id for u in am.users}, {11, 12})
+        self.assertIn("From <@1>: discuss backups", g.thread.send.call_args[0][0])
+        self.assertEqual(g.chats.create_thread.call_args.kwargs["name"], "discuss-backups")
+
+    def test_unknown_name(self):
+        g = make_guild()
+        out = handle(g, 11, '<@9> open "t" bob | hi')
+        self.assertIn("unknown agent", out)
+        g.chats.create_thread.assert_not_called()
+
+    def test_mention_style_names_rejected(self):
+        g = make_guild()
+        out = handle(g, 11, '<@9> open "t" <@12> | hi')
+        self.assertTrue(out.startswith("error"))
+        g.chats.create_thread.assert_not_called()
+
+    def test_no_agents_or_empty_message(self):
+        g = make_guild()
+        self.assertTrue(handle(g, 11, '<@9> open "t" | hi').startswith("error"))
+        g.chats.create_thread.assert_not_called()
+
+
+class Kick(unittest.TestCase):
+    def test_kick(self):
+        g = make_guild()
+        out = handle(g, 11, "<@9> kick <#300> ops")
+        self.assertEqual(g.thread.remove_user.call_args.args[0].id, 12)
+        self.assertIn("ops removed", out)
+
+    def test_refuse_owner(self):
+        g = make_guild()
+        for n in ("alex", "owner", "Alex"):
+            out = handle(g, 11, f"<@9> kick <#300> {n}")
+            self.assertIn("refused", out)
+        g.thread.remove_user.assert_not_called()
+
+    def test_refuse_owner_even_if_in_agent_map(self):
+        w = W.Gdpr(dict(CFG, agents={"boss": OWNER, "dev": 11}), BOT)
+        g = make_guild()
+        with self.assertRaises(W.GdprError):
+            run(w.kick(g, 11, 300, "boss"))
+
+    def test_unknown_name_and_thread(self):
+        g = make_guild()
+        self.assertIn("unknown agent", handle(g, 11, "<@9> kick <#300> bob"))
+        self.assertIn("not a thread", handle(g, 11, "<@9> kick <#999> dev"))
+        g.thread.remove_user.assert_not_called()
+
+    def test_thread_outside_chats_refused(self):
+        g = make_guild()
+        g.thread.parent_id = 555
+        self.assertIn("not a thread", handle(g, 11, "<@9> kick <#300> dev"))
+        g.thread.remove_user.assert_not_called()
+
+
+class AddArchive(unittest.TestCase):
+    def test_add(self):
+        g = make_guild()
+        out = handle(g, OWNER, "<@9> add <#300> qa")
+        self.assertEqual(g.thread.add_user.call_args.args[0].id, 13)
+        self.assertIn("qa added", out)
+
+    def test_archive(self):
+        g = make_guild()
+        out = handle(g, 12, "<@9> archive <#300>")
+        g.thread.edit.assert_called_once_with(archived=True)
+        self.assertIn("archive", out)
+        self.assertEqual(g.hq.send.call_args.kwargs["allowed_mentions"].users, False)
+
+
+class Ignored(unittest.TestCase):
+    def test_non_allowlisted(self):
+        g = make_guild()
+        self.assertIsNone(handle(g, 777, '<@9> open "t" dev | hi'))
+        self.assertIsNone(handle(g, 777, "<@9> kick <#300> dev"))
+        g.chats.create_thread.assert_not_called()
+        g.thread.remove_user.assert_not_called()
+
+    def test_own_messages(self):
+        g = make_guild()
+        self.assertIsNone(handle(g, BOT, '<@9> open "t" dev | hi'))
+
+    def test_other_channel_and_threads(self):
+        g = make_guild()
+        self.assertIsNone(handle(g, OWNER, "<@11> hi", channel_id=300))
+        self.assertIsNone(handle(g, 11, '<@9> open "t" dev | hi', channel_id=555))
+        g.chats.create_thread.assert_not_called()
+
+    def test_thread_under_chats_commands(self):
+        g = make_guild()
+        out = handle(g, 11, "<@9> kick ops", channel_id=300, parent_id=CHATS)
+        g.thread.remove_user.assert_called_once()
+        self.assertIn("kick: ops removed", out)
+        handle(g, OWNER, "<@9> add dev", channel_id=300, parent_id=CHATS)
+        g.thread.add_user.assert_called()
+        handle(g, 12, "<@9> archive", channel_id=300, parent_id=CHATS)
+        g.thread.edit.assert_called_once_with(archived=True)
+
+    def test_thread_owner_kick_refused_and_plain_ignored(self):
+        g = make_guild()
+        out = handle(g, 11, "<@9> kick alex", channel_id=300, parent_id=CHATS)
+        self.assertIn("owner cannot be kicked", out)
+        g.thread.remove_user.assert_not_called()
+        g2 = make_guild()
+        m = make_msg(g2, OWNER, "<@11> hi", channel_id=300, parent_id=CHATS)
+        m.channel.add_user = AsyncMock()
+        run(W.Gdpr(CFG, BOT).handle_message(m))
+        self.assertFalse(g2.hq.send.called)  # mention in a thread adds, never opens a thread
+        g2.chats.create_thread.assert_not_called()
+
+    def test_thread_elsewhere_and_hq_needs_ref(self):
+        g = make_guild()
+        self.assertIsNone(handle(g, 11, "<@9> archive", channel_id=300, parent_id=777))
+        out = handle(g, 11, "<@9> archive")  # in the HQ channel without a thread ref
+        self.assertIn("name the thread", out)
+        g.thread.edit.assert_not_called()
+
+    def test_dm(self):
+        w = W.Gdpr(CFG, BOT)
+        m = make_msg(None, OWNER, "<@11> hi")
+        run(w.handle_message(m))  # no crash
+
+    def test_owner_plain_chat_and_agent_plain_mention(self):
+        g = make_guild()
+        self.assertIsNone(handle(g, OWNER, "just talking"))
+        self.assertIsNone(handle(g, 11, "no mention here"))
+        g.chats.create_thread.assert_not_called()
+
+    def test_agent_plain_mention_opens_thread_with_owner(self):
+        g = make_guild()
+        out = handle(g, 11, "<@12> <@11> discuss X")  # self-mention ignored
+        self.assertEqual({c.args[0].id for c in g.thread.add_user.call_args_list}, {1, 11, 12})
+        self.assertIn("From <@11>: discuss X", g.thread.send.call_args[0][0])
+        self.assertIn("open:", out)
+        self.assertNotIn("<@", out)
+
+    def test_agent_mentioning_only_self_or_non_agent_ignored(self):
+        g = make_guild()
+        self.assertIsNone(handle(g, 11, "<@11> note to self"))
+        self.assertIsNone(handle(g, 11, "<@555> hi"))
+        g.chats.create_thread.assert_not_called()
+
+    def test_owner_mentions_non_agent(self):
+        g = make_guild()
+        self.assertIsNone(handle(g, OWNER, "<@555> hello"))
+
+    def test_hq_replies_do_not_loop(self):
+        # the bot's own pointer/log lines contain no <@id> and are ignored as own messages
+        g = make_guild()
+        out = handle(g, 11, '<@9> open "t" dev ops | hi')
+        self.assertNotRegex(out, r"<@")
+
+
+class Discord(unittest.TestCase):
+    def test_http_error_reported(self):
+        g = make_guild()
+        exc = discord.HTTPException.__new__(discord.HTTPException)
+        exc.status = 403
+        g.chats.create_thread.side_effect = exc
+        self.assertIn("403", handle(g, 11, '<@9> open "t" dev | hi'))
+
+
+class DecryptValue(unittest.TestCase):
+    def setUp(self):
+        try:
+            import pyrage
+        except ImportError:
+            self.skipTest("pyrage not installed")
+        import base64
+        import tempfile
+        self.pyrage, self.b64 = pyrage, base64
+        self.ident = pyrage.x25519.Identity.generate()
+        self.tmp = tempfile.NamedTemporaryFile("w", delete=False)
+        self.tmp.write("# comment\n" + str(self.ident) + "\n")
+        self.tmp.close()
+        self.addCleanup(os.unlink, self.tmp.name)
+
+    def enc(self, s, ident=None):
+        ident = ident or self.ident
+        return W.SECRET_PREFIX + self.b64.b64encode(
+            self.pyrage.encrypt(s.encode(), [ident.to_public()])).decode()
+
+    def test_roundtrip(self):
+        v = "tok_\u00e9" * 50
+        self.assertEqual(W.decrypt_value(self.enc(v), self.tmp.name), v)
+
+    def enc_gz(self, s):
+        import gzip
+        return W.SECRET_PREFIX_GZ + self.b64.b64encode(
+            self.pyrage.encrypt(gzip.compress(s.encode()), [self.ident.to_public()])).decode()
+
+    def test_roundtrip_gzip(self):
+        v = "-----BEGIN PRIVATE KEY-----\n" + "QUJD" * 1000 + "\n-----END PRIVATE KEY-----\n"
+        self.assertEqual(W.decrypt_value(self.enc_gz(v), self.tmp.name), v)
+
+    def test_gzip_bomb_rejected(self):
+        with self.assertRaises(W.GdprError):
+            W.decrypt_value(self.enc_gz("A" * (W.MAX_SECRET_BYTES + 10)), self.tmp.name)
+
+    def test_plain_passthrough(self):
+        self.assertEqual(W.decrypt_value("plainvalue", "/nonexistent"), "plainvalue")
+
+    def test_bad_ciphertext_errors_without_leak(self):
+        with self.assertRaises(W.GdprError) as cm:
+            W.decrypt_value(W.SECRET_PREFIX + "AAAA", self.tmp.name)
+        self.assertNotIn("AAAA", str(cm.exception))
+
+    def test_wrong_key_errors(self):
+        other = self.pyrage.x25519.Identity.generate()
+        with self.assertRaises(W.GdprError):
+            W.decrypt_value(self.enc("x", other), self.tmp.name)
+
+    def test_missing_key_file_errors(self):
+        with self.assertRaises(W.GdprError):
+            W.decrypt_value(self.enc("x"), "/nonexistent")
+
+
+class SecretStore(unittest.TestCase):
+    def test_writes_600_and_no_overwrite(self):
+        import os, stat, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = W.store_secret(d, "dev_token", "abc123\n")
+            self.assertEqual(open(p).read(), "abc123\n")
+            self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+            p2 = W.store_secret(d, "dev_token", "other")
+            self.assertNotEqual(p, p2)
+            self.assertEqual(open(p).read(), "abc123\n")
+
+    def test_sanitizes_names_and_rejects_empty(self):
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for raw, want in [("my token!", "my_token_"), ("../x", "x"), ("a/b", "a_b"), ("-y", "y")]:
+                p = W.store_secret(d, raw, "v")
+                self.assertEqual(os.path.dirname(p), d)
+                self.assertEqual(os.path.basename(p), want)
+            for bad in ["", "   ", "///", "..."]:
+                with self.assertRaises(W.GdprError):
+                    W.store_secret(d, bad, "v")
+            with self.assertRaises(W.GdprError):
+                W.store_secret(d, "ok", "  \n")
+
+
+class Macro(unittest.TestCase):
+    def members(self, g, *ids):
+        g.thread.fetch_members = AsyncMock(return_value=[types.SimpleNamespace(id=i) for i in ids])
+
+    def test_done_mentions_only_agents_in_thread(self):
+        g = make_guild()
+        self.members(g, OWNER, 11, 13, 777)  # ops (12) not in thread, 777 is a stranger
+        run(W.Gdpr(CFG, BOT).macro(g, OWNER, 300, "done"))
+        text, am = g.thread.send.call_args[0][0], g.thread.send.call_args.kwargs["allowed_mentions"]
+        self.assertEqual({u.id for u in am.users}, {11, 13})
+        self.assertIn("<@11>", text)
+        self.assertIn("<@13>", text)
+        self.assertNotIn("<@12>", text)
+        self.assertNotIn("<@1>", text)
+        self.assertNotIn("<@777>", text)
+        self.assertIn("Wrap-up requested by Alex", text)
+        self.assertFalse(am.everyone)
+        self.assertFalse(am.roles)
+        self.assertIn("done: sent in <#300>", g.hq.send.call_args[0][0])
+
+    def test_owner_in_agent_map_never_pinged(self):
+        w = W.Gdpr(dict(CFG, agents={"boss": OWNER, "dev": 11}), BOT)
+        g = make_guild()
+        self.members(g, OWNER, 11)
+        run(w.macro(g, OWNER, 300, "done"))
+        self.assertEqual({u.id for u in g.thread.send.call_args.kwargs["allowed_mentions"].users}, {11})
+
+    def test_no_agents_errors(self):
+        g = make_guild()
+        self.members(g, OWNER)
+        with self.assertRaises(W.GdprError):
+            run(W.Gdpr(CFG, BOT).macro(g, OWNER, 300, "done"))
+        g.thread.send.assert_not_called()
+
+    def test_outside_thread_errors(self):
+        g = make_guild()
+        with self.assertRaises(W.GdprError):
+            run(W.Gdpr(CFG, BOT).macro(g, OWNER, HQ, "done"))
+        g.thread.send.assert_not_called()
+
+    def test_unknown_macro_and_custom_macros(self):
+        g = make_guild()
+        self.members(g, 11)
+        w = W.Gdpr(dict(CFG, macros={"ship": "ship it"}), BOT)
+        with self.assertRaises(W.GdprError):
+            run(w.macro(g, OWNER, 300, "done"))
+        run(w.macro(g, OWNER, 300, "ship"))
+        self.assertIn("ship it", g.thread.send.call_args[0][0])
+
+
+class ArchivedThreads(unittest.TestCase):
+    def test_archived_thread_is_fetched(self):
+        g = make_guild()
+        g.get_thread.side_effect = lambda i: None  # not cached (archived)
+        g.fetch_channel = AsyncMock(return_value=g.thread)
+        out = handle(g, OWNER, "<@9> archive <#300>")
+        g.fetch_channel.assert_awaited_once_with(300)
+        g.thread.edit.assert_called_once_with(archived=True)
+        self.assertIn("archive", out)
+
+    def test_fetched_thread_outside_chats_refused(self):
+        g = make_guild()
+        g.get_thread.side_effect = lambda i: None
+        g.fetch_channel = AsyncMock(return_value=types.SimpleNamespace(parent_id=555))
+        self.assertIn("not a thread", handle(g, OWNER, "<@9> archive <#300>"))
+        g.thread.edit.assert_not_called()
+
+
+class OwnerName(unittest.TestCase):
+    def test_from_env(self):
+        cfg = W.load_config(dict(ENV, OWNER_NAME="Alex"))
+        self.assertEqual((cfg["owner_name"], cfg["owner_aliases"]), ("Alex", {"owner", "alex"}))
+        cfg = W.load_config(ENV)
+        self.assertEqual((cfg["owner_name"], cfg["owner_aliases"]), ("the owner", {"owner"}))
+
+    def test_macro_uses_owner_name(self):
+        g = make_guild()
+        g.thread.fetch_members = AsyncMock(return_value=[types.SimpleNamespace(id=11)])
+        run(W.Gdpr(dict(CFG, owner_name="Sam"), BOT).macro(g, OWNER, 300, "done"))
+        self.assertIn("Wrap-up requested by Sam.", g.thread.send.call_args[0][0])
+
+
+class Init(unittest.TestCase):
+    TOKEN_ID = "123456789012345678"
+
+    def env(self):
+        import base64
+        tok = base64.urlsafe_b64encode(self.TOKEN_ID.encode()).decode().rstrip("=") + ".x.y"
+        return dict(ENV, GDPR_TOKEN=tok)
+
+    def test_creates_key_and_inbox_and_keeps_key(self):
+        import contextlib
+        import io
+        import stat
+        import tempfile
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()) as out:
+            pub = W.init(d, self.env(), chown=False)
+            key = os.path.join(d, "gdpr_age_key")
+            self.assertTrue(pub.startswith("age1"))
+            self.assertEqual(stat.S_IMODE(os.stat(key).st_mode), 0o400)
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(d, "secrets")).st_mode), 0o700)
+            with open(key + ".pub") as f:
+                self.assertEqual(f.read().strip(), pub)
+            self.assertEqual(W.init(d, self.env(), chown=False), pub)  # second run keeps the key
+            self.assertIn(pub, out.getvalue())
+
+    def test_key_decrypts(self):
+        import base64
+        import contextlib
+        import io
+        import tempfile
+        import pyrage
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+            pub = W.init(d, self.env(), chown=False)
+            ct = pyrage.encrypt(b"hunter2", [pyrage.x25519.Recipient.from_str(pub)])
+            self.assertEqual(W.decrypt_value(W.SECRET_PREFIX + base64.b64encode(ct).decode(),
+                                             os.path.join(d, "gdpr_age_key")), "hunter2")
+
+    def test_refuses_bad_env_and_key_folder(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(SystemExit):
+                W.init(d, dict(ENV, OWNER_ID=""), chown=False)
+            os.mkdir(os.path.join(d, "gdpr_age_key"))
+            with self.assertRaises(SystemExit):
+                W.init(d, self.env(), chown=False)
+
+    def test_invite_url(self):
+        self.assertEqual(W.bot_id_from_token(self.env()["GDPR_TOKEN"]), self.TOKEN_ID)
+        self.assertIsNone(W.bot_id_from_token("garbage"))
+        self.assertIn(f"permissions={W.INVITE_PERMISSIONS}", W.invite_url("1"))
+
+
+class Discover(unittest.TestCase):
+    def fake(self, members_status=200, guilds=None, create_status=201):
+        calls = []
+        chans = [{"id": "500", "name": "general", "type": 0}, {"id": "501", "name": "voice", "type": 2}]
+        guilds = [{"id": "77", "name": "Test"}] if guilds is None else guilds
+
+        def call(token, method, path, body=None):
+            calls.append((method, path, body))
+            if path == "/users/@me":
+                return 200, {"id": "9", "username": "gdpr"}
+            if path == "/users/@me/guilds":
+                return 200, guilds
+            if path == "/guilds/77":
+                return 200, {"owner_id": "1"}
+            if method == "POST":
+                if create_status == 201:
+                    chans.append({"id": "502", "name": body["name"], "type": 0})
+                    return 201, chans[-1]
+                return create_status, {"message": "Missing Permissions"}
+            if path == "/guilds/77/channels":
+                return 200, list(chans)
+            if path.startswith("/guilds/77/members"):
+                if members_status != 200:
+                    return members_status, {"message": "Missing Access"}
+                return 200, [{"user": {"id": "9", "username": "gdpr", "bot": True}},
+                             {"user": {"id": "1", "username": "alex"}},
+                             {"user": {"id": "11", "username": "Dev Bot", "bot": True}}]
+            raise AssertionError(path)
+        return call, calls
+
+    def test_suggests_env(self):
+        call, _ = self.fake()
+        out = W.discover({"GDPR_TOKEN": "t"}, call=call, say=lambda *_: None)
+        self.assertEqual(out, {"OWNER_ID": "1", "HQ_ID": "500", "CHATS_ID": "500", "AGENT_IDS": "dev-bot=11"})
+
+    def test_create_channel_is_picked(self):
+        call, calls = self.fake()
+        out = W.discover({"GDPR_TOKEN": "t"}, create_channel="gdpr", call=call, say=lambda *_: None)
+        self.assertIn(("POST", "/guilds/77/channels", {"name": "gdpr", "type": 0}), calls)
+        self.assertEqual(out["HQ_ID"], "502")
+
+    def test_create_channel_without_permission(self):
+        call, _ = self.fake(create_status=403)
+        with self.assertRaises(SystemExit):
+            W.discover({"GDPR_TOKEN": "t"}, create_channel="gdpr", call=call, say=lambda *_: None)
+
+    def test_members_intent_missing_still_works(self):
+        call, _ = self.fake(members_status=403)
+        out = W.discover({"GDPR_TOKEN": "t"}, call=call, say=lambda *_: None)
+        self.assertEqual(out["AGENT_IDS"], "<name=id,...>")
+        self.assertEqual(out["HQ_ID"], "500")
+
+    def test_not_invited_or_many_servers(self):
+        for guilds in ([], [{"id": "77", "name": "a"}, {"id": "78", "name": "b"}]):
+            call, _ = self.fake(guilds=guilds)
+            with self.assertRaises(SystemExit):
+                W.discover({"GDPR_TOKEN": "t"}, call=call, say=lambda *_: None)
+        with self.assertRaises(SystemExit):
+            W.discover({"GDPR_TOKEN": ""}, call=call, say=lambda *_: None)
+
+    def test_invite_has_manage_channels(self):
+        self.assertTrue(W.INVITE_PERMISSIONS & (1 << 4))
+
+
+if __name__ == "__main__":
+    unittest.main()
