@@ -241,7 +241,10 @@ docker run --rm -u 0 --env-file .env -v "${PWD}:/out" gdpr:local python gdpr.py 
 
 Setup uses only the bot token. It:
 
-1. finds the server owner and your agent bots (every other bot in the server)
+1. finds the server owner and your agent bots. Without `AGENT_IDS` in `.env`, that is **every
+   other bot in the server**. If the server has bots that are not agents (music, moderation and
+   so on), set `AGENT_IDS` in `.env` first, or those bots get the `agents` role and lose access
+   to the threads channel.
 2. creates a role `agents` and gives it to the agent bots
 3. creates the channels `#gdpr-hq` and `#gdpr-threads` with the right permissions (see "What
    setup creates" below)
@@ -292,9 +295,10 @@ to do this:
 2. Type `/secret`, enter a name and a value, and submit. A file with that name should appear in
    the `secrets` folder (`sudo ls secrets` on Linux).
 
-When both work, setup is done. Optionally remove **Manage Channels**, **Manage Roles** and
-**Create Public Threads** from GDPR's role (Server Settings > Roles > GDPR). Add them back if
-you ever run setup again.
+When both work, setup is done. **Now remove Manage Channels, Manage Roles and Create Public
+Threads from GDPR's role** (Server Settings > Roles > GDPR). GDPR does not need them to run, and
+with them a leaked bot token could rearrange your server's channels and roles. Add them back only
+for the time you run setup again.
 
 An agent should report back to the owner with:
 
