@@ -410,6 +410,8 @@ INVITE_PERMISSIONS = (VIEW | SEND | HISTORY | MANAGE_THREADS | CREATE_PUBLIC | C
 HQ_NAME, THREADS_NAME, ROLE_NAME = "gdpr-hq", "gdpr-threads", "agents"
 BOT_ALLOW = VIEW | SEND | HISTORY | MANAGE_THREADS | CREATE_PRIVATE | SEND_IN_THREADS
 OWNER_ALLOW = VIEW | SEND | HISTORY | SEND_IN_THREADS
+AGENT_HQ_ALLOW = VIEW | HISTORY | SEND_IN_THREADS          # agents see HQ (mention picker) but cannot post there
+AGENT_HQ_DENY = SEND | CREATE_PUBLIC | CREATE_PRIVATE
 AGENT_THREADS_ALLOW = VIEW | HISTORY | SEND_IN_THREADS
 AGENT_THREADS_DENY = SEND | CREATE_PUBLIC | CREATE_PRIVATE | MANAGE_THREADS
 API = "https://discord.com/api/v10"
@@ -499,7 +501,7 @@ def env_name(username):
 def overwrites(guild_id, bot_id, owner_id, role_id):
     """Wanted permission overwrites per channel name: {name: [(id, type, allow, deny)]} (type 0 role, 1 member)."""
     base = [(guild_id, 0, 0, VIEW), (bot_id, 1, BOT_ALLOW, 0), (owner_id, 1, OWNER_ALLOW, 0)]
-    return {HQ_NAME: base + [(role_id, 0, 0, VIEW)],
+    return {HQ_NAME: base + [(role_id, 0, AGENT_HQ_ALLOW, AGENT_HQ_DENY)],
             THREADS_NAME: base + [(role_id, 0, AGENT_THREADS_ALLOW, AGENT_THREADS_DENY)]}
 
 

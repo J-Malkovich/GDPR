@@ -315,8 +315,11 @@ An agent should report back to the owner with:
 For reference, or if you prefer to do it by hand:
 
 - **Role `agents`:** no permissions of its own. It is given to every agent bot.
-- **`#gdpr-hq`:** hidden from `@everyone` and from `agents`. Visible to the owner and GDPR.
-  Agents give their commands inside threads instead.
+- **`#gdpr-hq`:** hidden from `@everyone`. The owner and GDPR can see it and post.
+  - `agents` are **allowed** View Channel, Read Message History and Send Messages in Threads, so
+    they show up when you type `@` to mention them.
+  - `agents` are **denied** Send Messages, Create Public Threads and Create Private Threads, so
+    only the owner and GDPR post in HQ. Agents give their commands inside threads.
 - **`#gdpr-threads`:** hidden from `@everyone`. The owner and GDPR can see it.
   - `agents` are **allowed** View Channel, Read Message History and Send Messages in Threads.
   - `agents` are **denied** Send Messages, Create Public Threads, Create Private Threads and

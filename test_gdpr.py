@@ -623,7 +623,9 @@ class Setup(unittest.TestCase):
         self.assertTrue(int(ow["90"]["deny"]) & W.MANAGE_THREADS)
         self.assertEqual(int(ow["77"]["deny"]), W.VIEW)  # @everyone cannot see it
         self.assertEqual(int(ow["9"]["allow"]), W.BOT_ALLOW)
-        self.assertEqual(int({o["id"]: o for o in hq["permission_overwrites"]}["90"]["deny"]), W.VIEW)
+        hq_agents = {o["id"]: o for o in hq["permission_overwrites"]}["90"]
+        self.assertTrue(int(hq_agents["allow"]) & W.VIEW)  # agents appear in the HQ mention picker
+        self.assertEqual(int(hq_agents["deny"]), W.SEND | W.CREATE_PUBLIC | W.CREATE_PRIVATE)  # but cannot post
         with open(os.path.join(d, ".env")) as f:
             self.assertTrue(f.read().startswith("# comment\n"))  # comments kept
 
@@ -688,7 +690,8 @@ class Setup(unittest.TestCase):
 
     def test_invite_permissions(self):
         self.assertEqual(W.INVITE_PERMISSIONS, 360777321472 | W.CREATE_PUBLIC | W.MANAGE_CHANNELS | W.MANAGE_ROLES)
-        for p in (W.AGENT_THREADS_ALLOW, W.AGENT_THREADS_DENY, W.BOT_ALLOW, W.OWNER_ALLOW):
+        for p in (W.AGENT_HQ_ALLOW, W.AGENT_HQ_DENY, W.AGENT_THREADS_ALLOW, W.AGENT_THREADS_DENY,
+                  W.BOT_ALLOW, W.OWNER_ALLOW):
             self.assertEqual(p & ~W.INVITE_PERMISSIONS, 0)  # the bot only sets permissions it holds
 
 
