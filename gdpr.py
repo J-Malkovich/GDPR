@@ -600,7 +600,8 @@ def setup(out, env=None, call=api, say=print, run_init=True):
     # report agents that could read every private thread (never changed silently)
     perms = {r["id"]: int(r.get("permissions", 0)) for r in roles}
     if not members:
-        check(False, "could not list members to check agent roles: turn on Server Members Intent (A1)")
+        say("WARN  could not list members, so agent roles were not checked for Manage Threads/Administrator "
+            "(turn on Server Members Intent, A1, and run setup again to check)")
     for aid, name in agents.items():
         p = perms.get(gid, 0)
         for rid in by_id.get(aid, {}).get("roles", []):

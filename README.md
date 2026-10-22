@@ -255,7 +255,10 @@ Setup uses only the bot token. It:
 6. creates the encryption key `gdpr_age_key` (plus `gdpr_age_key.pub`) and the `secrets`
    folder
 
-You should see a list of `PASS` lines and at the end `setup complete`.
+You should see a list of `PASS` lines and at the end `setup complete`. A `WARN` line about
+listing members means Server Members Intent is off: setup still completes, but it could not check
+the agents' roles for Manage Threads. Turn the intent on (A1) and run setup again to get that
+check.
 
 A `FAIL` line says what is wrong and which step fixes it. Fix it and run setup again: it reuses
 the role and channels that already exist, so it is safe to run as often as needed. Never

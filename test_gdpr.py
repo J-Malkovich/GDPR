@@ -664,7 +664,9 @@ class Setup(unittest.TestCase):
         fake = FakeDiscord(members_ok=False)
         ok, _, out, _ = self.run_setup(fake, f"GDPR_TOKEN={self.TOKEN}\nAGENT_IDS=dev=11\n")
         self.assertIn("PUT", {c[0] for c in fake.calls})  # still assigns the role from AGENT_IDS
-        self.assertIn("Server Members Intent", out)
+        self.assertTrue(ok, out)  # skipped role check is a warning, not a failure
+        self.assertIn("WARN  could not list members", out)
+        self.assertIn("setup complete", out)
 
     def test_not_invited_or_many_servers(self):
         for guilds in ([], [{"id": "77", "name": "a"}, {"id": "78", "name": "b"}]):
