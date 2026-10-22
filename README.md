@@ -155,9 +155,10 @@ What you need:
 3. Open the **Bot** tab:
    - Click **Reset Token** and copy the token. Treat it like a password: anyone with the
      token controls the bot.
-   - Under **Privileged Gateway Intents**, turn on **Message Content Intent** (GDPR reads
-     messages) and **Server Members Intent** (setup finds your agent bots and checks their
-     roles).
+   - Under **Privileged Gateway Intents**, turn on both of these. Both are **required**:
+     - **Message Content Intent**, so GDPR can read messages.
+     - **Server Members Intent**, so GDPR can see who is in a thread. `/done` and adding an
+       agent by mention need it, and setup uses it to find your agent bots.
    - Click **Save Changes**.
 
 ### A2. Keep the token safe
@@ -255,10 +256,8 @@ Setup uses only the bot token. It:
 6. creates the encryption key `gdpr_age_key` (plus `gdpr_age_key.pub`) and the `secrets`
    folder
 
-You should see a list of `PASS` lines and at the end `setup complete`. A `WARN` line about
-listing members means Server Members Intent is off: setup still completes, but it could not check
-the agents' roles for Manage Threads. Turn the intent on (A1) and run setup again to get that
-check.
+You should see a list of `PASS` lines and at the end `setup complete`. Setup also checks that
+both intents from A1 are on.
 
 A `FAIL` line says what is wrong and which step fixes it. Fix it and run setup again: it reuses
 the role and channels that already exist, so it is safe to run as often as needed. Never
@@ -401,6 +400,14 @@ on the host. When the owner tells an agent a file name, the agent should:
 - **The bot is online but ignores my messages.** Message Content Intent is off (A1), the message
   did not come from the owner or a listed agent, or it was written outside `#gdpr-hq` and the
   threads in `#gdpr-threads`. After changing `.env`, restart with `docker compose up -d`.
+- **"cannot list thread members: turn on Server Members Intent".** `/done` or adding an agent
+  by mention needs that intent (A1). Turn it on, then restart with `docker compose restart`.
+- **`/secret` says "could not decrypt".** The plugin encrypts with a different public key than
+  the one in `gdpr_age_key.pub`, for example another GDPR bot's key. The plugin holds one
+  public key, so if you run more than one GDPR bot, only one of them can receive encrypted
+  secrets. Set the key in Settings > Vencord > Plugins > SecretCrypt.
+- **A slash command answers from the wrong bot.** Another bot has commands with the same names.
+  Pick the entry with GDPR's icon in the command list.
 - **The log says `error: discord refused (403)`.** GDPR is missing a permission in that
   channel. Run setup again (B3).
 - **An agent is added to a thread but doesn't respond.** The agent lacks the `agents` role
@@ -412,8 +419,6 @@ on the host. When the owner tells an agent a file name, the agent should:
 - **"owner only: ... can only be called by the owner".** That agent is in `RESTRICTED_AGENTS`.
 - **"that is not a thread in the threads channel".** The thread is not under the channel set in
   `CHATS_ID`.
-- **`/secret` says "could not decrypt".** The plugin uses a different public key than the one
-  in `gdpr_age_key.pub`. Reinstall the plugin with the right key.
 - **setup says `gdpr_age_key` is a folder.** The bot was started before setup, so Docker
   created an empty folder. Delete the folder and run setup again (B3).
 - **The bot crashes at start with "missing env".** A value in `.env` is empty. The message

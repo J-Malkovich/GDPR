@@ -546,7 +546,9 @@ class Init(unittest.TestCase):
 
 class FakeDiscord:
     """In-memory stand-in for the few REST endpoints `setup` uses."""
-    def __init__(self, members_ok=True, perms_ok=True, guilds=None, agent_perms=0):
+    def __init__(self, members_ok=True, perms_ok=True, guilds=None, agent_perms=0,
+                 app_flags=W.FLAG_MEMBERS & (1 << 14) | (1 << 18)):
+        self.app_flags = app_flags
         self.guilds = [{"id": "77", "name": "Test"}] if guilds is None else guilds
         self.members_ok, self.perms_ok = members_ok, perms_ok
         self.roles = [{"id": "77", "name": "@everyone", "permissions": "0"},
@@ -561,6 +563,8 @@ class FakeDiscord:
         self.calls.append((method, path, body))
         if path == "/users/@me":
             return 200, {"id": "9", "username": "gdpr"}
+        if path == "/applications/@me":
+            return 200, {"flags": self.app_flags}
         if path == "/users/@me/guilds":
             return 200, self.guilds
         if path == "/guilds/77":
@@ -688,6 +692,14 @@ class Setup(unittest.TestCase):
             self.assertTrue(W.setup(d, env={}, call=FakeDiscord()))
         W.load_config(init.call_args[0][1])  # the merged values form a complete config
 
+    def test_intents_checked(self):
+        ok, _, out, _ = self.run_setup(FakeDiscord(app_flags=1 << 18))  # members intent off
+        self.assertFalse(ok)
+        self.assertIn("FAIL  Server Members Intent", out)
+        ok, _, out, _ = self.run_setup(FakeDiscord(app_flags=(1 << 15) | (1 << 19)))  # "limited" variants
+        self.assertTrue(ok, out)
+        self.assertIn("PASS  Message Content Intent is on", out)
+
     def test_invite_permissions(self):
         self.assertEqual(W.INVITE_PERMISSIONS, 360777321472 | W.CREATE_PUBLIC | W.MANAGE_CHANNELS | W.MANAGE_ROLES)
         for p in (W.AGENT_HQ_ALLOW, W.AGENT_HQ_DENY, W.AGENT_THREADS_ALLOW, W.AGENT_THREADS_DENY,
@@ -752,6 +764,37 @@ class Restricted(unittest.TestCase):
     def test_config_restricted(self):
         c = W.load_config(dict(ENV, AGENT_IDS="dev=11,boss=14", RESTRICTED_AGENTS="Boss"))
         self.assertEqual(c["restricted"], {"boss"})
+
+
+def http_error(status):
+    try:  # real discord.py: HTTPException(response, message)
+        return discord.HTTPException(types.SimpleNamespace(status=status, reason="x"), "x")
+    except TypeError:  # stand-in
+        return discord.HTTPException(status)
+
+
+class MembersIntent(unittest.TestCase):
+    def test_done_explains_missing_intent(self):
+        g = make_guild()
+        g.thread.fetch_members = AsyncMock(side_effect=http_error(403))
+        with self.assertRaises(W.GdprError) as e:
+            run(W.Gdpr(CFG, BOT).macro(g, OWNER, 300, "done"))
+        self.assertIn("Server Members Intent", str(e.exception))
+
+    def test_mention_add_explains_missing_intent(self):
+        g = make_guild()
+        m = make_msg(g, OWNER, "hey <@11>", channel_id=300, parent_id=CHATS)
+        m.channel.add_user = AsyncMock(); m.channel.send = AsyncMock()
+        m.channel.fetch_members = AsyncMock(side_effect=http_error(403))
+        run(W.Gdpr(CFG, BOT).handle_message(m))
+        self.assertIn("Server Members Intent", g.hq.send.call_args[0][0])
+        self.assertFalse(m.channel.add_user.called)
+
+    def test_other_errors_pass_through(self):
+        g = make_guild()
+        g.thread.fetch_members = AsyncMock(side_effect=http_error(500))
+        with self.assertRaises(discord.HTTPException):
+            run(W.Gdpr(CFG, BOT).macro(g, OWNER, 300, "done"))
 
 
 if __name__ == "__main__":

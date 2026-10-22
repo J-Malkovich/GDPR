@@ -146,6 +146,16 @@ class Gdpr:
         self.cfg, self.bot_id = cfg, bot_id
         self.agent_ids = set(cfg["agents"].values())
 
+    async def member_ids(self, thread):
+        """IDs of the thread's members. Discord answers 403 unless Server Members Intent is on."""
+        try:
+            return {m.id for m in await thread.fetch_members()}
+        except discord.HTTPException as e:
+            if getattr(e, "status", None) == 403:
+                raise GdprError("cannot list thread members: turn on Server Members Intent "
+                                "for this bot in the Discord developer portal (README A1)")
+            raise
+
     def is_restricted(self, aid):
         r = self.cfg.get("restricted", set())
         return any(self.cfg["agents"].get(n) == aid for n in r)
@@ -235,7 +245,7 @@ class Gdpr:
             raise GdprError(f"unknown macro {name}")
         text = text.replace("{owner}", self.cfg.get("owner_name", "the owner"))
         t = await self.thread_of(guild, thread_id)
-        members = {m.id for m in await t.fetch_members()}
+        members = await self.member_ids(t)
         ids = [i for i in dict.fromkeys(self.cfg["agents"].values())
                if i in members and i != self.cfg["owner_id"]]
         if not ids:
@@ -275,7 +285,7 @@ class Gdpr:
                                 raise GdprError(f"owner only: {n} can only be called by the owner")
                             # events of a private thread only reach members, so the message that
                             # triggered the add was never delivered: re-ping with a fresh message
-                            joined = {m.id for m in await ch.fetch_members()}
+                            joined = await self.member_ids(ch)
                             await ch.add_user(discord.Object(id=i))
                             if i not in joined:
                                 await ch.send(f"<@{i}> {self.who(uid)} mentioned you above: {message.jump_url}",
@@ -401,6 +411,8 @@ def main():
 
 
 BOT_UID = 10001
+# application flags: privileged intents enabled in the developer portal (full or "limited" variant)
+FLAG_MEMBERS, FLAG_CONTENT = (1 << 14) | (1 << 15), (1 << 18) | (1 << 19)
 ADMIN, MANAGE_CHANNELS, VIEW, SEND, HISTORY, MANAGE_ROLES = 1 << 3, 1 << 4, 1 << 10, 1 << 11, 1 << 16, 1 << 28
 MANAGE_THREADS, CREATE_PUBLIC, CREATE_PRIVATE, SEND_IN_THREADS = 1 << 34, 1 << 35, 1 << 36, 1 << 38
 # Manage Channels + Manage Roles are only for `setup` (create channels, role, overwrites); a bot can
@@ -552,6 +564,12 @@ def setup(out, env=None, call=api, say=print, run_init=True):
     st, me = call(token, "GET", "/users/@me")
     if st != 200:
         raise SystemExit(f"Discord rejected the token (HTTP {st}). Check GDPR_TOKEN in .env (README step A1).")
+    st, app = call(token, "GET", "/applications/@me")
+    flags = int((app or {}).get("flags") or 0) if st == 200 else None
+    for bit, name, why in ((FLAG_CONTENT, "Message Content Intent", "GDPR cannot read messages"),
+                           (FLAG_MEMBERS, "Server Members Intent", "/done and adding agents by mention fail")):
+        check(flags is not None and bool(flags & bit), f"{name} is on" + ("" if flags is not None and flags & bit
+              else f": turn it on in the developer portal, Bot tab (README A1); without it {why}"))
     st, guilds = call(token, "GET", "/users/@me/guilds")
     if st != 200 or not guilds:
         raise SystemExit("The bot is not in any server yet. Open the invite link (README step A3): "
