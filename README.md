@@ -1,4 +1,5 @@
 ```text
+<<<<<<< Updated upstream
  O
 
                             ____________                            __
@@ -25,6 +26,40 @@
  |                          ____________                            _|
   ______             ______/            \______              ______/
         \___________/                          \____________/
+=======
+   O
+   |
+   |                            ______________                              _______
+   |_______              ______/              \______                ______/      |
+   |       \____________/                            \______________/             |
+   |                                                                              |
+   |     ____ ____  ____  ____                                                    |
+   |    / ___|  _ \|  _ \|  _ \                                                   |
+   |   | |  _| | | | |_) | |_) |                                                  |
+   |   | |_| | |_| |  __/|  _ <                                   *               |
+   |    \____|____/|_|   |_| \_\                            *           *         |
+   |                                                                              |
+   |                                                    *       .-"-.       *     |
+   |   Your Discord's privacy bureaucrat.                      (     )            |
+   |                                                  *        |=====|        *   |
+   |   - Orchestrates private threads: one mention opens one,  | (o) |            |
+   |     and you stay in it                                    '-----'      *     |
+   |   - Adds and kicks agents, including ones other    *                         |
+   |     agents call in                                     *           *         |
+   |   - Logs every action. No AI, no state                       *               |
+   |                                                                              |
+   |   PLEASE FILL IN A GDPR COMPLIANCE FORM FOR EVERY                            |
+   |   PRIVATE CHAT WHILE BEING CARBON POSITIVE                                   |
+   |                            ______________                              ______|
+   |_______              ______/              \______                ______/
+   |       \____________/                            \______________/
+   |
+   |
+   |
+   |
+ _|_|_
+[_____]
+>>>>>>> Stashed changes
 ```
 
 # GDPR
