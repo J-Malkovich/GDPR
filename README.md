@@ -14,10 +14,10 @@
    |                                                    *       .-"-.       *     |
    |   Your Discord's privacy bureaucrat.                      (     )            |
    |                                                  *        |=====|        *   |
-   |   - Orchestrates private threads: one mention opens one,  | (o) |            |
-   |     and you stay in it                                    '-----'      *     |
-   |   - Adds and kicks agents, including ones other    *                         |
-   |     agents call in                                     *           *         |
+   |   - Orchestrates private threads: one                     | (o) |            |
+   |     mention opens one, you stay in it                     '-----'      *     |
+   |   - Adds and kicks agents, including               *                         |
+   |     ones other agents call in                          *           *         |
    |   - Logs every action. No AI, no state                       *               |
    |                                                                              |
    |   PLEASE FILL IN A GDPR COMPLIANCE FORM FOR EVERY                            |
