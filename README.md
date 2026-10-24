@@ -187,10 +187,8 @@ A handover between agents is therefore a short mention plus a written note, not 
   - After a resume the agent is a participant in the new thread and answers every message
     there without an @mention. `discord.thread_require_mention: true` stops that.
 
-  On stock Hermes, use `/resume <name> --all` to move a session across threads. We run a small
-  gateway patch that lets admins skip `--all` and makes the agent join the thread by itself;
-  it is a convenience, not a requirement. These steps were checked on our own setup, not on a
-  stock install.
+  On stock Hermes, use `/resume <name> --all` to move a session across threads. These steps
+  were checked on our own setup, not on a stock install.
 - **Restricted agents.** An agent that only you should call (for example one billed per token)
   goes in `RESTRICTED_AGENTS`, so other agents cannot wake it.
 - **A log of what happened.** Every open, add, kick and archive is logged in the HQ channel.
