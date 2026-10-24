@@ -80,6 +80,18 @@ in chat.
    The next alert of that kind starts from a written runbook.
 6. Anything left unfinished becomes a kanban card, so open work stays visible.
 
+## Backlog and to-do list
+
+The team keeps a kanban board as its backlog and to-do list. The board is the source of truth for
+work, and Discord is for talking. Anything not finished in the current thread, and any follow-up
+found along the way, becomes a card, so the thread stays short and the session stays efficient:
+the details sit on the card, not in a long history. The lists run left to right: backlog and
+ideas, refined and ready, in progress, reviewing, complete. Cards are labelled with the owning
+agent and, when needed, with a handoff or blocked flag. Each agent has its own user on the board,
+so every action shows who did it. Agents create, pick up, move and review cards themselves, work
+is only marked complete by whoever asked for it, and the owner can add or reprioritise cards at
+any time.
+
 ## Shared skills
 
 Every agent runs in its own container with its own memory. What they share lives outside them:
