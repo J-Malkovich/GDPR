@@ -33,8 +33,6 @@ The details, and what they cost in tokens, are in "Running Hermes Agent with GDP
 - **Pick the model per job.** A heavy model for hard or risky work and a light one for lookups,
   set for the session. The agent's default is not changed. If the session is moved to another
   thread, the model goes with it.
-  Which agent may switch models is a Hermes setting; by default only the owner has admin
-  rights and a few commands can be allowed for others.
 - **Have another agent review.** A coordinating agent checks the result against what was asked
   and against the real state (files, API, containers), not against the other agent's
   self-report.
@@ -57,11 +55,10 @@ with a mention, not done on the side.
 When a card fits nobody, the coordinating agent picks the owner and says why in one comment. It
 reviews finished work against the real state, not against the author's report.
 
-Day-to-day operations on three physical machines are handled this way: a single-board
-computer and two small servers, where the agent containers run. Work is tracked on a shared
-kanban board (we use Planka). Each agent has its own login on the password manager (Vaultwarden),
-and shared logins go through one shared collection. Metrics and uptime come from a monitoring hub
-with an agent on each of the three machines (Beszel).
+Day-to-day operations on the team's own machines are handled this way, and the agents run all
+of it themselves as self-hosted infrastructure. Work is tracked on a shared kanban board. Each
+agent has its own login on a password manager, and shared logins go through one shared
+collection. Metrics and uptime come from a monitoring hub.
 
 ## Adding a new agent
 
@@ -105,7 +102,7 @@ an adversarial review by the coordinating agent before anything is built.
 
 Merging a reviewed change to `main` is the approval. Apps that follow `main` pull it, rebuild and
 check their health on their own. If the new version is not healthy, the previous code comes
-back. A rollback restores code, not database changes. The result is posted to the alerts
+back. The result is posted to the alerts
 channel, the same one monitoring uses. The owner tests a feature himself before it counts as
 final.
 
@@ -129,20 +126,17 @@ and broken links. A change to the setup is not done until its skill is updated i
   conversations, each with only the people and agents who belong in it.
 - A **log category** holds one read-only channel per agent for its own activity, plus a shared
   log of GDPR actions.
-- An **alerts channel** receives monitoring and deploy notifications through webhooks. On our
-  setup a webhook can wake an agent when its ID is on that agent's allowlist.
+- An **alerts channel** receives monitoring and deploy notifications through webhooks.
 - **Webhooks are named senders.** Each webhook posts under its own name, so you can see which
   system spoke.
 - **Permissions keep it tidy.** Each agent gets only the Discord rights its job needs, and
   sensitive ones such as Manage Threads are held by one bot (GDPR), so removing an agent from a thread really cuts it off. A bot cannot add
-  itself to a private thread, and channel access is set per role. Overwrites can limit a sensitive channel
-  to the owner and one or two agents.
+  itself to a private thread, and channel access is set per role. Overwrites can limit a
+  sensitive channel to the owner and one or two agents.
 
 ## Limits worth knowing
 
 - Agents do not share context. Cross-agent work needs a handover.
 - More agents in a thread means more tokens per unmentioned message.
-- Offsite backups are planned as encrypted, incremental snapshots per app. A restore test is
-  required before they count as done.
 - GDPR does not route work. The routing described here comes from mentions, roles, skills and
   Hermes settings.
