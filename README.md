@@ -106,6 +106,70 @@ Nothing appears in chat. Then tell the agent in a thread which file name to pick
   Other agents get "owner only".
 - **Everyone else:** ignored.
 
+## Running Hermes Agent with GDPR
+
+GDPR is agent-agnostic, but it was built for a team of [Hermes Agent](https://hermes-agent.nousresearch.com/docs)
+bots. This section explains what that combination gives you and why the setup looks the way it
+does.
+
+### Why the agents need shared infrastructure
+
+Each Hermes agent runs as its own container with its own bot token, config, memory, skills and
+session history. They do not share a process, a filesystem or a context window. An agent cannot
+see what another agent said or did unless it is told. So everything the team shares has to live
+outside the agents:
+
+- **Discord is the common room.** A private thread is the one place where you and several agents
+  see the same messages. GDPR creates and manages those threads, so the agents don't need
+  moderation rights.
+- **Mentions are the wake-up signal.** An agent only acts when it is mentioned or addressed. A
+  plain name in a message wakes nobody, so agents hand work to each other with a real mention.
+  GDPR re-pings an agent after adding it, because Discord does not deliver earlier messages to a
+  new member of a private thread.
+- **One shared skills repo.** Procedures any agent learns are stored in a git repo all agents
+  pull from, so one agent's lesson is available to the rest. Each agent still decides which
+  skills it enables.
+- **Project knowledge lives in the repo** (`AGENTS.md`), not in an agent's memory.
+- **Secrets stay out of chat.** Agents don't share credentials. `/secret` puts a value in a file
+  on the server, and only the agent that needs it picks it up.
+- **A clear owner per area** (infrastructure, Discord setup, code, coordination). A request
+  outside an agent's area is handed to the owner with a mention, not done on the side.
+
+A handover between agents is therefore a short mention plus a written note, not shared memory.
+
+### What GDPR and the Discord setup make easier
+
+- **One thread per job.** Mention an agent in the HQ channel and the thread appears with the
+  right agents in it. Archive it when done. Old threads need no cleanup.
+- **Adding and removing agents mid-conversation.** `@GDPR add ops` brings in a second agent
+  without anyone needing thread permissions.
+- **Wrap-up.** `/done` makes every agent check for unfinished work and save what it learned
+  (memory and skills) before you close the thread.
+- **Moving a session to another thread.** A Hermes session can be taken from one thread to
+  another with its full history:
+  1. In the old thread: `/title <name>` (once per session).
+  2. In the new thread: `@GDPR add <agent>` if the agent is not there yet, then `/resume <name>`.
+
+  The agent can only join a private thread through GDPR, so `/add` has to come first. `/resume`
+  moves the session: the new thread's own earlier session is replaced (it is still stored and
+  can be resumed by title), and the old thread starts fresh. A session belongs to the agent that
+  made it, so this works within one agent only. Across agents, use a handover note.
+  Requirement on the Hermes side: the owner's user ID must be set as an admin for that bot
+  (`platforms.discord.extra.group_allow_admin_from` in its `config.yaml`). Without it the
+  cross-thread resume is silently ignored. Depending on your Hermes version a small gateway
+  change may also be needed; check that `/resume <name>` answers "Resumed session ...".
+- **Restricted agents.** An agent that only you should call (for example one billed per token)
+  goes in `RESTRICTED_AGENTS`, so other agents cannot wake it.
+- **A log of what happened.** Every open, add, kick and archive is logged in the HQ channel.
+
+### What it does not do
+
+GDPR does not run agents, route work or keep context between agents. It manages who is in which
+thread. Task tracking, shared skills and project notes are separate pieces you provide (we use a
+kanban board and a git repo).
+
+---
+
 ---
 
 ## How setup works
