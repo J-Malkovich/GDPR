@@ -65,6 +65,7 @@ def make_msg(g, uid, content, channel_id=HQ, parent_id=None):
     m.channel.parent_id = parent_id
     m.author.id, m.content, m.guild = uid, content, g
     m.channel.id = channel_id
+    m.channel.send = AsyncMock()  # the real channel.send is a coroutine
     return m
 
 
@@ -795,6 +796,102 @@ class MembersIntent(unittest.TestCase):
         g.thread.fetch_members = AsyncMock(side_effect=http_error(500))
         with self.assertRaises(discord.HTTPException):
             run(W.Gdpr(CFG, BOT).macro(g, OWNER, 300, "done"))
+
+
+
+class Correction(unittest.TestCase):
+    """GDPR answers in the thread when it cannot act on a message that mentions it."""
+
+    def msg(self, uid, content, w=None, sent=None):
+        g = make_guild()
+        m = make_msg(g, uid, content, channel_id=300, parent_id=CHATS)
+        m.channel.add_user = AsyncMock()
+        m.channel.fetch_members = AsyncMock(return_value=[])
+        m.channel.send = AsyncMock()
+        run((w or W.Gdpr(CFG, BOT)).handle_message(m))
+        return g, m
+
+    def test_prose_before_mention_gets_correction_and_ping(self):
+        g, m = self.msg(12, "sorry, here you go <@9> open \"x\" dev | hi")
+        text = m.channel.send.call_args[0][0]
+        self.assertTrue(text.startswith("<@12> GDPR did not act"))
+        self.assertIn("FIRST thing", text)
+        self.assertIn("open \"topic\"", text)
+        self.assertFalse(text.startswith("<@9>"))            # never starts with its own mention
+        self.assertIs(m.channel.send.call_args[1]["reference"], m)
+        self.assertFalse(g.hq.send.called)
+        self.assertFalse(g.chats.create_thread.called)       # and nothing was opened
+
+    def test_correction_pings_only_the_agent(self):
+        _, m = self.msg(12, "ok <@9> open")
+        users = m.channel.send.call_args[1]["allowed_mentions"].users
+        self.assertEqual([u.id for u in users], [12])
+
+    def test_unclear_command_from_agent_corrected_in_thread_and_logged_in_hq(self):
+        g, m = self.msg(12, "<@9> please do the thing")
+        self.assertIn("could not read", m.channel.send.call_args[0][0])
+        self.assertEqual(g.hq.send.call_args[0][0], W.USAGE)
+
+    def test_owner_is_never_pinged(self):
+        _, m = self.msg(OWNER, "hey <@9> can you open a thread")
+        text = m.channel.send.call_args[0][0]
+        self.assertFalse(text.startswith("<@1>"))
+        self.assertFalse(m.channel.send.call_args[1]["allowed_mentions"].users)
+
+    def test_owner_plain_sentence_stays_silent(self):
+        _, m = self.msg(OWNER, "thanks <@9> that was great")
+        self.assertFalse(m.channel.send.called)
+
+    def test_owner_unclear_command_is_not_corrected(self):
+        _, m = self.msg(OWNER, "<@9> hmm")
+        self.assertFalse(m.channel.send.called)
+
+    def test_mention_in_code_block_or_span_is_ignored(self):
+        _, m = self.msg(12, "use this: `<@9> open \"x\" dev | hi`")
+        self.assertFalse(m.channel.send.called)
+        _, m = self.msg(12, "example:\n```\n<@9> open \"x\" dev | hi\n```")
+        self.assertFalse(m.channel.send.called)
+
+    def test_loop_guard_one_per_sender_per_minute(self):
+        w = W.Gdpr(CFG, BOT)
+        _, m1 = self.msg(12, "a <@9> open", w)
+        _, m2 = self.msg(12, "b <@9> open", w)
+        self.assertTrue(m1.channel.send.called)
+        self.assertFalse(m2.channel.send.called)
+        _, m3 = self.msg(13, "c <@9> open", w)               # another sender is still corrected
+        self.assertTrue(m3.channel.send.called)
+        w.last_correction = {k: v - 61 for k, v in w.last_correction.items()}
+        _, m4 = self.msg(12, "d <@9> open", w)
+        self.assertTrue(m4.channel.send.called)
+
+    def test_own_messages_never_trigger(self):
+        _, m = self.msg(BOT, "ignored <@9> open")
+        self.assertFalse(m.channel.send.called)
+
+    def test_no_mention_no_correction(self):
+        _, m = self.msg(12, "open a thread please")
+        self.assertFalse(m.channel.send.called)
+
+    def test_mention_of_agent_still_adds_and_correction_also_when_gdpr_mentioned(self):
+        _, m = self.msg(12, "<@11> look, <@9> open")
+        self.assertEqual([c.args[0].id for c in m.channel.add_user.call_args_list], [11])
+        self.assertTrue(any("did not act" in c.args[0] for c in m.channel.send.call_args_list))
+
+    def test_valid_command_gets_no_correction(self):
+        g, m = self.msg(12, "<@9> open \"x\" dev | hi")
+        self.assertFalse(m.channel.send.called)
+        self.assertTrue(g.chats.create_thread.called)
+
+    def test_refused_command_from_agent_is_corrected_in_thread(self):
+        _, m = self.msg(12, "<@9> kick nobodyhere")
+        self.assertTrue(m.channel.send.called)
+
+
+class DoneText(unittest.TestCase):
+    def test_done_text_from_env(self):
+        cfg = W.load_config(dict(ENV, DONE_TEXT="Wrap up for {owner}."))
+        self.assertEqual(cfg["macros"], {"done": "Wrap up for {owner}."})
+        self.assertNotIn("macros", W.load_config(ENV))
 
 
 if __name__ == "__main__":
