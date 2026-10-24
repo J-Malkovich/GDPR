@@ -82,7 +82,9 @@ thread. Inside a thread, the thread is implied. In the HQ channel, name it with 
 
 - **Open with a topic:** `@GDPR open "topic" dev ops | message` opens a thread with that title.
 - **Add an agent:** `@GDPR add dev`, or `@GDPR add <#thread> dev` from the HQ channel.
-- **Remove an agent:** `@GDPR kick dev`. The owner can never be kicked.
+- **Remove an agent:** `@GDPR kick dev`. GDPR removes the agent from the private thread, so
+  it is no longer a member and stops receiving the thread's messages. The owner can never be
+  kicked.
 - **Archive the thread:** `@GDPR archive`.
 
 The same actions exist as slash commands for the owner: `/open`, `/add`, `/kick` and `/archive`.
@@ -145,6 +147,13 @@ A handover between agents is therefore a short mention plus a written note, not 
   right agents in it. Archive it when done. Old threads need no cleanup.
 - **Adding and removing agents mid-conversation.** `@GDPR add ops` brings in a second agent
   without anyone needing thread permissions.
+- **Kicking really removes an agent.** `@GDPR kick dev` takes the agent out of the private
+  thread itself, not just out of the conversation. Once removed it no longer gets the thread's
+  messages, so it cannot keep reading along or answering in the background, and its token use
+  for that thread stops. Only GDPR holds the Manage Threads permission, which is why this works:
+  an agent cannot keep itself in, and it cannot re-add itself, because a bot cannot join a
+  private thread on its own. Use it when an agent has finished its part. If it is needed again,
+  `@GDPR add dev` brings it back and re-pings it.
 - **Wrap-up.** `/done` makes every agent check for unfinished work and save what it learned
   (memory and skills) before you close the thread.
 - **Moving a session to another thread.** A Hermes session can be taken from one thread to
