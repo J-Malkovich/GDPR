@@ -152,14 +152,23 @@ A handover between agents is therefore a short mention plus a written note, not 
   1. In the old thread: `/title <name>` (once per session).
   2. In the new thread: `@GDPR add <agent>` if the agent is not there yet, then `/resume <name>`.
 
-  The agent can only join a private thread through GDPR, so `/add` has to come first. `/resume`
-  moves the session: the new thread's own earlier session is replaced (it is still stored and
-  can be resumed by title), and the old thread starts fresh. A session belongs to the agent that
-  made it, so this works within one agent only. Across agents, use a handover note.
-  Requirement on the Hermes side: the owner's user ID must be set as an admin for that bot
-  (`platforms.discord.extra.group_allow_admin_from` in its `config.yaml`). Without it the
-  cross-thread resume is silently ignored. Depending on your Hermes version a small gateway
-  change may also be needed; check that `/resume <name>` answers "Resumed session ...".
+  The agent can only join a private thread through GDPR (a bot cannot add itself to a private
+  thread, Discord answers 403 Missing Access), so `/add` has to come first or `/resume` fails.
+  `/resume` moves the session: the new thread's own earlier session is replaced (it is still
+  stored and can be resumed by title), and the old thread starts fresh. A session belongs to the
+  agent that made it, so this works within one agent only. Across agents, use a handover note.
+
+  On the Hermes side, the owner's user ID must be set as an admin for that bot
+  (`platforms.discord.extra.group_allow_admin_from` in its `config.yaml`, then restart the
+  gateway). Without it a cross-thread resume is silently ignored. Side effects to know about:
+  - Non-admin humans can then only run `/help` and `/whoami` on that bot in Discord.
+  - After a resume the agent is a participant in the new thread and answers every message
+    there without an @mention. `discord.thread_require_mention: true` stops that.
+
+  On stock Hermes, use `/resume <name> --all` to move a session across threads. We run a small
+  gateway patch that lets admins skip `--all` and makes the agent join the thread by itself;
+  it is a convenience, not a requirement. These steps were checked on our own setup, not on a
+  stock install.
 - **Restricted agents.** An agent that only you should call (for example one billed per token)
   goes in `RESTRICTED_AGENTS`, so other agents cannot wake it.
 - **A log of what happened.** Every open, add, kick and archive is logged in the HQ channel.
