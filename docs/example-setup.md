@@ -58,7 +58,7 @@ Day-to-day operations on three physical machines are handled this way: a single-
 computer and two small servers, where the agent containers run. Work is tracked on a shared
 kanban board (we use Planka). Each agent has its own login on the password manager (Vaultwarden),
 and shared logins go through one shared collection. Metrics and uptime come from a monitoring hub
-with an agent on every host (Beszel).
+with an agent on each of the three machines (Beszel).
 
 ## Adding a new agent
 
@@ -74,8 +74,8 @@ Discord application and its token.
 ## From alert to action
 
 1. Monitoring raises an alert when a host, container or service crosses a threshold or goes down.
-2. A small poller turns each new alert into a Discord message. The poller is plain code, so
-   routine problems are handled by automation without an agent.
+2. A small poller turns each new alert into a Discord message. Routine problems are handled by
+   plain automation first.
 3. An alert that automation cannot fix is posted with a real mention of the owning agent. Only a
    real mention wakes an agent.
 4. The agent opens a thread, investigates, fixes the problem or escalates it, and posts the
