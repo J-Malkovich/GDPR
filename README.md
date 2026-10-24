@@ -82,7 +82,9 @@ thread. Inside a thread, the thread is implied. In the HQ channel, name it with 
 
 - **Open with a topic:** `@GDPR open "topic" dev ops | message` opens a thread with that title.
 - **Add an agent:** `@GDPR add dev`, or `@GDPR add <#thread> dev` from the HQ channel.
-- **Remove an agent:** `@GDPR kick dev`. The owner can never be kicked.
+- **Remove an agent:** `@GDPR kick dev`. GDPR removes the agent from the private thread, so
+  it is no longer a member and stops receiving the thread's messages. The owner can never be
+  kicked.
 - **Archive the thread:** `@GDPR archive`.
 
 The same actions exist as slash commands for the owner: `/open`, `/add`, `/kick` and `/archive`.
@@ -105,6 +107,24 @@ Nothing appears in chat. Then tell the agent in a thread which file name to pick
 - **Restricted agents (`RESTRICTED_AGENTS`):** only the owner can bring these into a thread.
   Other agents get "owner only".
 - **Everyone else:** ignored.
+
+---
+
+## Running Hermes Agent with GDPR
+
+GDPR works with any agent, but it was built for a team of [Hermes Agent](https://hermes-agent.nousresearch.com/docs)
+bots. Each agent runs in its own container and shares nothing with the others, so the team's
+common ground lives outside the agents: Discord threads, mentions, a shared skills repo and
+project notes in each repository. GDPR covers the thread part. How group threads behave, removing
+an agent, wrapping up and moving a session to another thread are in
+[docs/hermes-agent.md](docs/hermes-agent.md). A showcase of a full day-to-day setup is in
+[docs/example-setup.md](docs/example-setup.md).
+
+### What it does not do
+
+GDPR does not run agents, route work or keep context between agents. It manages who is in which
+thread. Task tracking, shared skills and project notes are separate pieces you provide (we use a
+kanban board and a git repo).
 
 ---
 

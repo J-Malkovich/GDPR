@@ -1,0 +1,145 @@
+# Example setup: what GDPR makes possible
+
+This page is a showcase, not a reference. It describes how one owner uses GDPR with a team of
+[Hermes Agent](https://hermes-agent.nousresearch.com/docs) bots, to show what the combination
+allows. Setup and commands are in the [README](../README.md).
+
+Nothing here is required. GDPR only manages who is in which private thread. The rest comes from
+Hermes Agent (skills, memory, a role description per agent) and from how the Discord server is
+laid out.
+
+## The idea
+
+The owner talks to the agents in Discord. GDPR decides who is in which thread. The agents do the
+work. Alerts come back into Discord. Most days the owner only sees alerts and results, not
+routine maintenance.
+
+## How Discord is laid out
+
+- A **trigger channel** is where the owner starts a job: mention an agent there and GDPR opens a
+  private thread for it.
+- The threads all sit under one **parent channel**, so the owner has a single list of
+  conversations, each with only the people and agents who belong in it.
+- A **log category** holds one read-only channel per agent for its own activity, plus a shared
+  log of GDPR actions.
+- An **alerts channel** receives monitoring and deploy notifications through webhooks.
+- **Webhooks are named senders.** Each webhook posts under its own name, so you can see which
+  system spoke.
+- **Permissions keep it tidy.** Each agent gets only the Discord rights its job needs.
+  - Sensitive ones such as Manage Threads are held by one bot (GDPR), so removing an agent from
+    a thread really cuts it off.
+  - A bot cannot add itself to a private thread.
+  - Channel access is set per role. Overwrites can limit a sensitive channel to the owner and
+    one or two agents.
+
+## Who does what
+
+Each area has one owning agent, and a request outside an agent's area is handed to its owner
+with a mention, not done on the side.
+
+- A **sysadmin** agent runs the apps, monitoring, backups and the password manager.
+- A **coordinating** agent triages work, reviews it and owns the agent containers.
+- A **Discord** agent owns the server layout, roles and integrations.
+- A **developer** agent owns code and pull requests.
+
+When a card fits nobody, the coordinating agent picks the owner and says why in one comment. It
+reviews finished work against the real state (files, API, containers), not against the author's
+report.
+
+Day-to-day operations on the team's own machines are handled this way, and the agents run all
+of it themselves as self-hosted infrastructure. Work is tracked on a shared kanban board. Each
+agent has its own login on a password manager, and shared logins go through one shared
+collection. Metrics and uptime come from a monitoring hub.
+
+**Adding a new agent.** With the deployment skill prepared for the managing agent, it can deploy
+a new agent itself. It then onboards the agent to the team: it shares the skills and prepares
+the agent's role, access and place in the Discord setup. The owner only supplies the secrets,
+through `/secret` and never in chat.
+
+## One thread, separate conversations
+
+A private thread can hold several agents at once, and the owner can still talk to one of them
+without the others joining in.
+
+- `@agent ...` is for that agent. Agents that are not mentioned stay out of it.
+- A message with no mention is read by every agent that has already taken part, and each may
+  answer. Use it when you want everyone's view.
+- Agents hand work to each other the same way, with a real mention.
+
+The details, and what they cost in tokens, are in [hermes-agent.md](hermes-agent.md).
+
+## Working together
+
+- **Bring an agent in to do a job.** Mention it, or `@GDPR add dev`. It reads the thread and
+  does the task.
+- **Pick the model per job.** A heavy model for hard or risky work and a light one for lookups,
+  set for the session. The agent's default is not changed. If the session is moved to another
+  thread, the model goes with it.
+- **Have another agent review.** A coordinating agent checks the result against what was asked.
+- **Hand over with a mention plus a note.** Agents share no memory, so a handover is a mention
+  that says what is needed and where the result goes. The agent that was asked replies with a
+  mention when it is done, and says what it verified.
+- **Move or close a conversation.** Move a session to another thread
+  ([hermes-agent.md](hermes-agent.md)), kick agents that are finished, and `/done` makes
+  everyone save what they learned.
+
+## From alert to action
+
+1. Monitoring raises an alert when a host, container or service crosses a threshold or goes down.
+2. Monitoring posts alerts to a Discord alerts channel.
+3. An alert that needs judgment goes to the owning agent with a real mention. Only a real mention
+   wakes an agent.
+4. The agent opens a thread, investigates, fixes the problem or escalates it, and posts the
+   result.
+5. If the fix is something the team will meet again, the agent writes it into a shared skill.
+   The next alert of that kind starts from a written runbook.
+6. Anything left unfinished becomes a kanban card, so open work stays visible.
+
+## Backlog and to-do list
+
+The team keeps a kanban board as its backlog and to-do list. The board is the source of truth for
+work, and Discord is for talking.
+
+- Anything not finished in the current thread, and any follow-up found along the way, becomes a
+  card. The thread stays short and the session stays efficient: the details sit on the card, not
+  in a long history.
+- The lists run left to right: backlog and ideas, refined and ready, in progress, reviewing,
+  complete.
+- Cards are labelled with the owning agent and, when needed, with a handoff or blocked flag.
+- Each agent has its own user on the board, so every action shows who did it.
+- Agents create, pick up, move and review cards themselves. Work is only marked complete by
+  whoever asked for it, and the owner can add or reprioritise cards at any time.
+
+## Shipping an app
+
+A task arrives in a thread with a goal and a definition of done. The developer agent builds on a
+branch in its own environment, runs the existing tests as a baseline and again at the end, and
+opens a pull request with a short done-report that rates the change small, normal or risky.
+Small docs or test-only changes can go straight to main. Everything else goes through a pull
+request, and risky changes (auth, secrets, permissions, network exposure, large diffs) also get
+an adversarial review by the coordinating agent before anything is built.
+
+Merging a reviewed change to `main` is the approval. Apps that follow `main` pull it, rebuild and
+check their health on their own. If the new version is not healthy, the previous code is
+restored and the result is posted. Data changes such as database migrations are not undone. The
+result goes to the alerts channel, the same one monitoring uses. The owner tests a feature
+himself before it counts as final.
+
+## Shared skills
+
+Every agent runs in its own container with its own memory. What they share lives outside them:
+a git repository of skills that all agents read. A procedure one agent learns (a runbook, a
+pitfall, a preference of the owner) is available to the others after the next sync. Each agent
+chooses which skills to load into its own prompt. Project knowledge stays in each repository,
+not in an agent's memory.
+
+Every skill an agent writes goes into the shared repo. A check runs before each push, covering
+size, a clear "Use when" trigger and broken links. A change to the setup is not done until its
+skill is updated in the same step.
+
+## Limits worth knowing
+
+- Agents do not share context. Cross-agent work needs a handover.
+- More agents in a thread means more tokens per unmentioned message.
+- GDPR does not route work. The routing described here comes from mentions, roles, skills and
+  Hermes settings.
