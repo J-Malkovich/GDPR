@@ -147,13 +147,14 @@ A handover between agents is therefore a short mention plus a written note, not 
   right agents in it. Archive it when done. Old threads need no cleanup.
 - **Adding and removing agents mid-conversation.** `@GDPR add ops` brings in a second agent
   without anyone needing thread permissions.
-- **Kicking really removes an agent.** `@GDPR kick dev` takes the agent out of the private
-  thread itself, not just out of the conversation. Once removed it no longer gets the thread's
-  messages, so it cannot keep reading along or answering in the background, and its token use
-  for that thread stops. Only GDPR holds the Manage Threads permission, which is why this works:
-  an agent cannot keep itself in, and it cannot re-add itself, because a bot cannot join a
-  private thread on its own. Use it when an agent has finished its part. If it is needed again,
-  `@GDPR add dev` brings it back and re-pings it.
+- **Removing an agent.** `@GDPR kick dev` (or `/kick`) takes the agent out of the private
+  thread, so it no longer receives that thread. Each agent is a separate bot with its own
+  session, so asking it to stay quiet does not stop it reading and spending tokens in the
+  background; removing it does. This only holds while the agent has no Manage Threads or
+  Administrator permission, which is why only GDPR holds Manage Threads (setup warns about
+  roles that break this). It also pairs with resume: after a resume an agent answers
+  everything in the thread, and a kick is how you stop that. This says the agent no longer
+  receives the thread, not that it forgets it. `@GDPR add dev` brings it back.
 - **Wrap-up.** `/done` makes every agent check for unfinished work and save what it learned
   (memory and skills) before you close the thread.
 - **Moving a session to another thread.** A Hermes session can be taken from one thread to
