@@ -54,6 +54,9 @@ with a mention, not done on the side.
 - A **Discord** agent owns the server layout, roles and integrations.
 - A **developer** agent owns code and pull requests.
 
+When a card fits nobody, the coordinating agent picks the owner and says why in one comment. It
+reviews finished work against the real state, not against the author's report.
+
 Day-to-day operations on three physical machines are handled this way: a single-board
 computer and two small servers, where the agent containers run. Work is tracked on a shared
 kanban board (we use Planka). Each agent has its own login on the password manager (Vaultwarden),
@@ -92,6 +95,21 @@ so every action shows who did it. Agents create, pick up, move and review cards 
 is only marked complete by whoever asked for it, and the owner can add or reprioritise cards at
 any time.
 
+## Shipping an app
+
+A task arrives in a thread with a goal and a definition of done. The developer agent builds on a
+branch in its own environment, runs the existing tests as a baseline and again at the end, and
+opens a pull request with a short done-report that rates the change small, normal or risky.
+Small docs or test-only changes can go straight to main. Everything else goes through a pull
+request, and risky changes (auth, secrets, permissions, network exposure, large diffs) also get
+an adversarial review by the coordinating agent before anything is built.
+
+Merging a reviewed change to `main` is the approval. Apps that follow `main` pull it, rebuild and
+check their health on their own. If the new version is not healthy, the previous code comes
+back. A rollback restores code, not database changes. The result is posted to the alerts
+channel, the same one monitoring uses. The owner tests a feature himself before it counts as
+final.
+
 ## Shared skills
 
 Every agent runs in its own container with its own memory. What they share lives outside them:
@@ -99,6 +117,10 @@ a git repository of skills that all agents read. A procedure one agent learns (a
 pitfall, a preference of the owner) is available to the others after the next sync. Each agent
 still decides which skills it enables for itself. Project knowledge stays in each repository, not
 in an agent's memory.
+
+Every skill an agent writes goes into the shared repo, and each agent chooses which ones to load
+into its own prompt. A check runs before each push, covering size, a clear "Use when" trigger
+and broken links. A change to the setup is not done until its skill is updated in the same step.
 
 ## How Discord is laid out
 
@@ -110,13 +132,18 @@ in an agent's memory.
   log of GDPR actions.
 - An **alerts channel** receives monitoring and deploy notifications through webhooks. On our
   setup a webhook can wake an agent when its ID is on that agent's allowlist.
+- **Webhooks are named senders.** Each webhook posts under its own name, so you can see which
+  system spoke.
 - **Permissions keep it tidy.** Each agent gets only the Discord rights its job needs, and
   sensitive ones such as Manage Threads are held by one bot (GDPR), so removing an agent from a thread really cuts it off. A bot cannot add
-  itself to a private thread, and channel access is set per role.
+  itself to a private thread, and channel access is set per role. Overwrites can limit a sensitive channel
+  to the owner and one or two agents.
 
 ## Limits worth knowing
 
 - Agents do not share context. Cross-agent work needs a handover.
 - More agents in a thread means more tokens per unmentioned message.
+- Offsite backups are planned as encrypted, incremental snapshots per app. A restore test is
+  required before they count as done.
 - GDPR does not route work. The routing described here comes from mentions, roles, skills and
   Hermes settings.
