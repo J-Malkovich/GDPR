@@ -147,6 +147,18 @@ A handover between agents is therefore a short mention plus a written note, not 
   right agents in it. Archive it when done. Old threads need no cleanup.
 - **Adding and removing agents mid-conversation.** `@GDPR add ops` brings in a second agent
   without anyone needing thread permissions.
+- **How group threads behave.** When several agents are in one thread, who answers depends on
+  the mention. This comes from the Hermes Discord gateway, not from GDPR (read in the gateway
+  code, not tested live with two agents):
+  - A message that mentions one or more agents but not agent X is ignored by X. Mention only
+    the agents you want to answer.
+  - A message with no mention at all is read by every agent that has already taken part in the
+    thread, and each may answer. That costs tokens for every agent, so remove the ones you no
+    longer need (see "Removing an agent").
+  - An agent that has not taken part yet needs a mention to start.
+  - Agent-to-agent messages only wake the target if they contain a real mention of it.
+  - An optional Hermes setting, `discord.thread_require_mention: true`, makes threads require a
+    mention even after an agent has taken part. It is off by default.
 - **Removing an agent.** `@GDPR kick dev` (or `/kick`) takes the agent out of the private
   thread, so it no longer receives that thread. Each agent is a separate bot with its own
   session, so asking it to stay quiet does not stop it reading and spending tokens in the
