@@ -73,10 +73,9 @@ in chat.
 ## From alert to action
 
 1. Monitoring raises an alert when a host, container or service crosses a threshold or goes down.
-2. A small poller turns each new alert into a Discord message. Routine problems are handled by
-   plain automation first.
-3. An alert that automation cannot fix is posted with a real mention of the owning agent. Only a
-   real mention wakes an agent.
+2. Monitoring posts alerts to a Discord alerts channel.
+3. An alert that needs judgment goes to the owning agent with a real mention. Only a real mention
+   wakes an agent.
 4. The agent opens a thread, investigates, fixes the problem or escalates it, and posts the
    result.
 5. If the fix is something the team will meet again, the agent writes it into a shared skill.
