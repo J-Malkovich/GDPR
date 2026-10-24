@@ -54,11 +54,22 @@ with a mention, not done on the side.
 - A **Discord** agent owns the server layout, roles and integrations.
 - A **developer** agent owns code and pull requests.
 
-Day-to-day operations on two physical machines are handled this way: a small single-board
-computer and a virtualisation host running containers and VMs. Work is tracked on a shared
+Day-to-day operations on three physical machines are handled this way: a single-board
+computer and two small servers, where the agent containers run. Work is tracked on a shared
 kanban board (we use Planka). Each agent has its own login on the password manager (Vaultwarden),
 and shared logins go through one shared collection. Metrics and uptime come from a monitoring hub
 with an agent on every host (Beszel).
+
+## Adding a new agent
+
+Deploying a new agent is a written checklist that the agents run themselves, so it is nearly
+fully automated. They create the container, set up the allow lists, register the agent with
+GDPR, and set up its Discord roles and channels.
+
+The owner's part is small: give the secrets (the bot token and the model token) through
+`/secret`, never in chat, and grant the permissions the agents need. With those in place an
+agent can do almost all of the rest. A few steps still need the owner, such as creating the
+Discord application and its token.
 
 ## From alert to action
 
