@@ -91,8 +91,8 @@ in an agent's memory.
   log of GDPR actions.
 - An **alerts channel** receives monitoring and deploy notifications through webhooks. On our
   setup a webhook can wake an agent when its ID is on that agent's allowlist.
-- **Permissions keep it tidy.** Each agent has only the Discord rights its job needs. Only GDPR
-  can manage threads, so removing an agent from a thread really cuts it off. A bot cannot add
+- **Permissions keep it tidy.** Each agent gets only the Discord rights its job needs, and
+  sensitive ones such as Manage Threads are held by one bot (GDPR), so removing an agent from a thread really cuts it off. A bot cannot add
   itself to a private thread, and channel access is set per role.
 
 ## Limits worth knowing
