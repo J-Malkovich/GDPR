@@ -31,7 +31,8 @@ The details, and what they cost in tokens, are in "Running Hermes Agent with GDP
 - **Bring an agent in to do a job.** Mention it, or `@GDPR add dev`. It reads the thread and
   does the task.
 - **Pick the model per job.** A heavy model for hard or risky work and a light one for lookups,
-  set for that thread only. It never changes the agent's default, and it ends with the thread.
+  set for the session. The agent's default is not changed. If the session is moved to another
+  thread, the model goes with it.
   Which agent may switch models is a Hermes setting; by default only the owner has admin
   rights and a few commands can be allowed for others.
 - **Have another agent review.** A coordinating agent checks the result against what was asked
@@ -91,8 +92,8 @@ in an agent's memory.
 - An **alerts channel** receives monitoring and deploy notifications through webhooks. On our
   setup a webhook can wake an agent when its ID is on that agent's allowlist.
 - **Permissions keep it tidy.** Each agent has only the Discord rights its job needs. Only GDPR
-  can manage threads, so removing an agent from a thread really cuts it off. Agents cannot make
-  themselves admins or add themselves to private threads, and channel access is set per role.
+  can manage threads, so removing an agent from a thread really cuts it off. A bot cannot add
+  itself to a private thread, and channel access is set per role.
 
 ## Limits worth knowing
 
