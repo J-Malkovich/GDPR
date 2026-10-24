@@ -106,6 +106,8 @@ Nothing appears in chat. Then tell the agent in a thread which file name to pick
   Other agents get "owner only".
 - **Everyone else:** ignored.
 
+---
+
 ## Running Hermes Agent with GDPR
 
 GDPR is agent-agnostic, but it was built for a team of [Hermes Agent](https://hermes-agent.nousresearch.com/docs)
@@ -167,8 +169,6 @@ A handover between agents is therefore a short mention plus a written note, not 
 GDPR does not run agents, route work or keep context between agents. It manages who is in which
 thread. Task tracking, shared skills and project notes are separate pieces you provide (we use a
 kanban board and a git repo).
-
----
 
 ---
 
