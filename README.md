@@ -195,6 +195,9 @@ A handover between agents is therefore a short mention plus a written note, not 
   goes in `RESTRICTED_AGENTS`, so other agents cannot wake it.
 - **A log of what happened.** Every open, add, kick and archive is logged in the HQ channel.
 
+For a fuller walk-through of how one owner uses this day to day (alerts, shared skills, model
+per job, reviews), see [docs/example-setup.md](docs/example-setup.md).
+
 ### What it does not do
 
 GDPR does not run agents, route work or keep context between agents. It manages who is in which
