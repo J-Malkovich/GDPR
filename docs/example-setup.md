@@ -62,14 +62,10 @@ with an agent on each of the three machines (Beszel).
 
 ## Adding a new agent
 
-Deploying a new agent is a written checklist that the agents run themselves, so it is nearly
-fully automated. They create the container, set up the allow lists, register the agent with
-GDPR, and set up its Discord roles and channels.
-
-The owner's part is small: give the secrets (the bot token and the model token) through
-`/secret`, never in chat, and grant the permissions the agents need. With those in place an
-agent can do almost all of the rest. A few steps still need the owner, such as creating the
-Discord application and its token.
+With the deployment skill prepared for the managing agent, it can deploy a new agent itself. It
+then onboards the agent to the team: it shares the skills and prepares the agent's role, access
+and place in the Discord setup. The owner only supplies the secrets, through `/secret` and never
+in chat.
 
 ## From alert to action
 
