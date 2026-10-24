@@ -20,6 +20,10 @@ REF_RE = re.compile(r"^(kick|add)\s+(?:<#(\d+)>\s+)?@?(\S+)\s*$", re.I)
 ARCH_RE = re.compile(r"^archive(?:\s+<#(\d+)>)?\s*$", re.I)
 
 
+CODE_RE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
+ATTEMPT_RE = re.compile(r"\b(open|add|kick|archive)\b", re.I)
+CORRECTION_GAP = 60  # seconds: max one correction per sender per thread
+
 MACROS = {
     "done": (
         "Wrap-up requested by {owner}. "
@@ -55,6 +59,8 @@ def load_config(env=None):
                    restricted={n.strip().lower() for n in env.get("RESTRICTED_AGENTS", "").split(",") if n.strip()})
         owner_name = env.get("OWNER_NAME", "").strip()
         cfg["owner_name"] = owner_name or "the owner"
+        if env.get("DONE_TEXT", "").strip():  # optional: your own /done wrap-up prompt ({owner} is replaced)
+            cfg["macros"] = {"done": env["DONE_TEXT"].strip()}
         cfg["owner_aliases"] = OWNER_ALIASES | ({owner_name.lower()} if owner_name else set())
     except ValueError:
         raise SystemExit("gdpr: OWNER_ID/HQ_ID/CHATS_ID/AGENT_IDS must be numeric ids")
@@ -145,6 +151,7 @@ class Gdpr:
     def __init__(self, cfg, bot_id=0):
         self.cfg, self.bot_id = cfg, bot_id
         self.agent_ids = set(cfg["agents"].values())
+        self.last_correction = {}  # (sender id, thread id) -> time.monotonic() of the last correction
 
     async def member_ids(self, thread):
         """IDs of the thread's members. Discord answers 403 unless Server Members Intent is on."""
@@ -257,6 +264,34 @@ class Gdpr:
         await self.log(guild, f"{name}: sent in {t.mention} by {self.who(by)} to "
                               + ", ".join(self.who(i) for i in ids))
 
+    def mentions_me(self, content):
+        """True if the text mentions the bot outside code spans/blocks (a quoted example doesn't count)."""
+        return re.search(rf"<@!?{self.bot_id}>", CODE_RE.sub(" ", content)) is not None
+
+    def looks_like_attempt(self, content):
+        """A command attempt = a bot mention followed (anywhere after it) by open/add/kick/archive."""
+        m = re.search(rf"<@!?{self.bot_id}>(.*)$", CODE_RE.sub(" ", content), re.S)
+        return bool(m and ATTEMPT_RE.search(m.group(1)))
+
+    async def correct(self, message, why, first=True):
+        """Answer IN the thread so the sender sees what was wrong. Pings the sender only if it is an agent
+        (so it wakes and resends), never the owner. Max one per sender per thread per CORRECTION_GAP seconds.
+        The reply never starts with the bot's own mention, so it cannot trigger itself."""
+        uid, ch = message.author.id, message.channel
+        now = time.monotonic()
+        last = self.last_correction.get((uid, ch.id))
+        if last is not None and now - last < CORRECTION_GAP:
+            return
+        self.last_correction[(uid, ch.id)] = now
+        rule = " The command must be the FIRST thing in its own message." if first else ""
+        text = (f"GDPR did not act on your message: {why}{rule} "
+                f"Resend it alone, like this: `<@{self.bot_id}> open \"topic\" dev | text`. {USAGE}")
+        ping = uid in self.agent_ids
+        if ping:
+            text = f"<@{uid}> " + text
+        await ch.send(text, reference=message, allowed_mentions=discord.AllowedMentions(
+            users=[discord.Object(id=uid)] if ping else False, roles=False, everyone=False, replied_user=False))
+
     async def handle_message(self, message):
         uid, ch, guild = message.author.id, message.channel, message.guild
         if uid == self.bot_id or guild is None:
@@ -292,6 +327,8 @@ class Gdpr:
                                               allowed_mentions=discord.AllowedMentions(
                                                   users=[discord.Object(id=i)], roles=False,
                                                   everyone=False, replied_user=False))
+                    if self.mentions_me(message.content) and (not is_owner or self.looks_like_attempt(message.content)):
+                        await self.correct(message, "it has my mention, but not at the start, so I read it as plain chat.")
                     return
                 ids = [int(i) for i in MENTION.findall(message.content)]
                 targets = [n for n, i in self.cfg["agents"].items() if i in ids and i != uid]
@@ -309,8 +346,15 @@ class Gdpr:
                 await self.archive(guild, uid, cmd[1])
             else:
                 await self.log(guild, USAGE)
+                if in_chat and not is_owner:
+                    await self.correct(message, "I could not read the command.")
         except GdprError as e:
             await self.log(guild, f"error: {e}")
+            if in_chat and not is_owner:
+                try:
+                    await self.correct(message, f"{e}.", first=False)
+                except discord.HTTPException:
+                    pass
         except discord.HTTPException as e:
             await self.log(guild, f"error: discord refused ({e.status})")
 
