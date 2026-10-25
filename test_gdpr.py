@@ -1190,6 +1190,12 @@ class CardWatch(unittest.TestCase):
         w.scan(board("L1", labels=["o"], agent="13"))
         self.assertEqual(w.scan(board("L2", labels=["o"], agent="13"))[0][1], 13)
 
+    def test_card_label_missing_from_board_ok(self):
+        w = self.watcher([1e10])
+        b = board("L1")
+        b["included"]["cardLabels"].append(dict(cardId="c1", labelId="gone"))
+        self.assertEqual(w.scan(b), [])
+
     def test_unknown_or_missing_label_no_mention(self):
         w = W.watcher_from_env(dict(WENV, AGENT_IDS="dev=11,ops=12"))
         w.scan(board("L1", labels=["x", "h"], agent=None))

@@ -525,7 +525,7 @@ class CardWatcher:
         fields = {f["id"]: f["name"] for f in inc.get("customFields", [])}
         blocked_by_card, values, agent_label = {}, {}, {}
         for cl in inc.get("cardLabels", []):
-            name = labels.get(cl["labelId"])
+            name = labels.get(cl["labelId"]) or ""
             if name == "blocked":
                 blocked_by_card[cl["cardId"]] = True
             elif name.startswith("agent:") and name[6:] in self.cfg.get("agents", {}):
