@@ -1244,5 +1244,79 @@ class CardWatch(unittest.TestCase):
         self.assertNotIn("fake-key", text)
 
 
+
+
+ACFG = dict(CFG, alert_channel_id=500, alert_bot_ids={77}, alert_dedupe_seconds=1800, alert_max_per_hour=2)
+AL = 500
+
+
+def alert_msg(g, content, uid=77):
+    m = make_msg(g, uid, content, channel_id=AL, parent_id=None)
+    m.jump_url = "https://discord/x"
+    return m
+
+
+class AlertRelay(unittest.TestCase):
+    def setUp(self):
+        self.g = make_guild()
+        self.g.thread.id = 300
+        self.w = W.Gdpr(ACFG, BOT)
+
+    def feed(self, content, uid=77):
+        run(self.w.handle_message(alert_msg(self.g, content, uid)))
+
+    def test_agent_mention_opens_private_thread(self):
+        self.feed("**[FIRING] Disk high on pi** <@12> <@1>\ndetails")
+        kw = self.g.chats.create_thread.call_args.kwargs
+        self.assertEqual(kw["name"], "alert-firing-disk-high-on-pi")
+        self.assertEqual(kw["type"], W.discord.ChannelType.private_thread)
+        self.assertEqual({c.args[0].id for c in self.g.thread.add_user.call_args_list}, {1, 12})
+        sent = self.g.thread.send.call_args
+        self.assertIn("details", sent.args[0])
+        self.assertEqual([u.id for u in sent.kwargs["allowed_mentions"].users], [12])
+
+    def test_owner_only_mention_ignored(self):
+        self.feed("**Alert** <@1>")
+        self.g.chats.create_thread.assert_not_called()
+
+    def test_no_mention_ignored(self):
+        self.feed("**Alert** nobody")
+        self.g.chats.create_thread.assert_not_called()
+
+    def test_other_author_ignored(self):
+        self.feed("**Alert** <@12>", uid=12)
+        self.g.chats.create_thread.assert_not_called()
+
+    def test_repeat_reuses_thread(self):
+        self.feed("**Alert A** <@12>")
+        self.feed("**Alert A** <@12> again")
+        self.assertEqual(self.g.chats.create_thread.call_count, 1)
+        self.assertEqual(self.g.thread.send.call_count, 2)
+
+    def test_repeat_after_window_opens_new(self):
+        self.feed("**Alert A** <@12>")
+        k = next(iter(self.w.alert_threads))
+        self.w.alert_threads[k] = (300, self.w.alert_threads[k][1] - 4000)
+        self.feed("**Alert A** <@12>")
+        self.assertEqual(self.g.chats.create_thread.call_count, 2)
+
+    def test_hourly_cap(self):
+        for n in "ABC":
+            self.feed(f"**Alert {n}** <@12>")
+        self.assertEqual(self.g.chats.create_thread.call_count, 2)
+        self.assertIn("cap reached", self.g.hq.send.call_args[0][0])
+
+    def test_off_by_default(self):
+        w = W.Gdpr(CFG, BOT)
+        run(w.handle_message(alert_msg(self.g, "**A** <@12>")))
+        self.g.chats.create_thread.assert_not_called()
+
+    def test_config(self):
+        c = W.load_config(dict(ENV, ALERT_CHANNEL_ID="500", ALERT_BOT_IDS="77"))
+        self.assertEqual((c["alert_channel_id"], c["alert_bot_ids"], c["alert_max_per_hour"]), (500, {77}, 5))
+        with self.assertRaises(SystemExit):
+            W.load_config(dict(ENV, ALERT_CHANNEL_ID="500"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -27,6 +27,7 @@ ARCH_RE = re.compile(r"^archive(?:\s+<#(\d+)>)?\s*$", re.I)
 
 CODE_RE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
 ATTEMPT_RE = re.compile(r"\b(open|add|kick|archive)\b", re.I)
+BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
 CORRECTION_GAP = 60  # seconds: max one correction per sender per thread
 
 MACROS = {
@@ -66,6 +67,14 @@ def load_config(env=None):
         cfg["owner_name"] = owner_name or "the owner"
         if env.get("DONE_TEXT", "").strip():  # optional: your own /done wrap-up prompt ({owner} is replaced)
             cfg["macros"] = {"done": env["DONE_TEXT"].strip()}
+        alert_ch = env.get("ALERT_CHANNEL_ID", "").strip()   # optional alert relay, see README
+        if alert_ch:
+            cfg["alert_channel_id"] = int(alert_ch)
+            cfg["alert_bot_ids"] = {int(x) for x in env.get("ALERT_BOT_IDS", "").split(",") if x.strip()}
+            if not cfg["alert_bot_ids"]:
+                raise SystemExit("gdpr: ALERT_CHANNEL_ID needs ALERT_BOT_IDS (ids of the bots/webhooks whose posts count as alerts)")
+            cfg["alert_dedupe_seconds"] = int(env.get("ALERT_DEDUPE_MINUTES", "30")) * 60
+            cfg["alert_max_per_hour"] = int(env.get("ALERT_MAX_THREADS_PER_HOUR", "5"))
         cfg["owner_aliases"] = OWNER_ALIASES | ({owner_name.lower()} if owner_name else set())
     except ValueError:
         raise SystemExit("gdpr: OWNER_ID/HQ_ID/CHATS_ID/AGENT_IDS must be numeric ids")
@@ -261,6 +270,8 @@ class Gdpr:
     def __init__(self, cfg, bot_id=0):
         self.cfg, self.bot_id = cfg, bot_id
         self.agent_ids = set(cfg["agents"].values())
+        self.alert_threads = {}   # alert key -> (thread id, time.monotonic() of the last post)
+        self.alert_opened = []    # time.monotonic() of each recent alert thread (rate cap)
         self.last_correction = {}  # (sender id, thread id) -> time.monotonic() of the last correction
 
     async def member_ids(self, thread):
@@ -374,6 +385,48 @@ class Gdpr:
         await self.log(guild, f"{name}: sent in {t.mention} by {self.who(by)} to "
                               + ", ".join(self.who(i) for i in ids))
 
+    async def handle_alert(self, message):
+        """A post by an alert bot in the alert channel that really mentions an agent: open (or reuse) one
+        private thread with that agent and relay the alert. Never wakes the owner or non-agents."""
+        ids = {int(i) for i in MENTION.findall(message.content or "")}
+        targets = [(n, i) for n, i in self.cfg["agents"].items() if i in ids and i != self.cfg["owner_id"]]
+        if not targets:
+            return
+        m = BOLD_RE.search(message.content)
+        title = " ".join((m.group(1) if m else MENTION.sub("", message.content).strip().split("\n")[0]).split())
+        key = (title.lower(), tuple(sorted(i for _, i in targets)))
+        now = time.monotonic()
+        guild = message.guild
+        text = f"Alert from <#{message.channel.id}> ({message.jump_url}):\n" + message.content[:1600]
+        allowed = discord.AllowedMentions(users=[discord.Object(id=i) for _, i in targets], roles=False,
+                                          everyone=False, replied_user=False)
+        known = self.alert_threads.get(key)
+        if known and now - known[1] < self.cfg.get("alert_dedupe_seconds", 1800):
+            try:
+                t = await self.thread_of(guild, known[0])
+                if getattr(t, "archived", False):
+                    await t.edit(archived=False)
+                await t.send(text, allowed_mentions=allowed)
+                self.alert_threads[key] = (known[0], now)
+                return
+            except (GdprError, discord.HTTPException):
+                pass  # thread gone: open a new one below
+        self.alert_opened = [x for x in self.alert_opened if now - x < 3600]
+        if len(self.alert_opened) >= self.cfg.get("alert_max_per_hour", 5):
+            await self.log(guild, f"alert: thread cap reached, not opening a thread for: {title[:80]}")
+            return
+        chats = guild.get_channel(self.cfg["chats_id"])
+        if chats is None:
+            raise GdprError("chats channel not found")
+        t = await chats.create_thread(name=("alert-" + slug(title))[:60], type=discord.ChannelType.private_thread,
+                                      invitable=False, auto_archive_duration=1440)
+        for uid in dict.fromkeys([self.cfg["owner_id"]] + [i for _, i in targets]):
+            await t.add_user(discord.Object(id=uid))
+        await t.send(text, allowed_mentions=allowed)
+        self.alert_opened.append(now)
+        self.alert_threads[key] = (t.id, now)
+        await self.log(guild, f"alert: {t.mention} opened with " + ", ".join(n for n, _ in targets))
+
     def mentions_me(self, content):
         """True if the text mentions the bot outside code spans/blocks (a quoted example doesn't count)."""
         return re.search(rf"<@!?{self.bot_id}>", CODE_RE.sub(" ", content)) is not None
@@ -405,6 +458,14 @@ class Gdpr:
     async def handle_message(self, message):
         uid, ch, guild = message.author.id, message.channel, message.guild
         if uid == self.bot_id or guild is None:
+            return
+        if ch.id == self.cfg.get("alert_channel_id") and uid in self.cfg.get("alert_bot_ids", ()):
+            try:
+                await self.handle_alert(message)
+            except GdprError as e:
+                await self.log(guild, f"error: {e}")
+            except discord.HTTPException as e:
+                await self.log(guild, f"error: discord refused ({e.status})")
             return
         in_hq = ch.id == self.cfg["hq_id"]
         in_chat = getattr(ch, "parent_id", None) in self.cfg.get("chats_ids", {self.cfg["chats_id"]})
