@@ -463,10 +463,13 @@ class VaultDepositTests(unittest.TestCase):
         run(self.v.deposit("b", "2"))
         self.assertEqual(len([c for c in self.calls() if c["argv"][:2] == ["login", "--apikey"]]), 1)
 
-    def test_same_name_gets_timestamp_suffix(self):
-        open(self.log + ".list", "w").write('[{"name": "tok"}]')
-        import re
-        self.assertTrue(re.fullmatch(r"tok\.\d+", run(self.v.deposit("tok", "v"))))
+    def test_same_name_makes_a_second_item_and_only_login_unlock_create_run(self):
+        run(self.v.deposit("tok", "v1"))
+        run(self.v.deposit("tok", "v2"))
+        cmds = [c["argv"][0] for c in self.calls()]
+        self.assertNotIn("sync", cmds)
+        self.assertNotIn("list", cmds)  # no extra round-trips: each bw call costs seconds
+        self.assertEqual(cmds.count("create"), 2)  # Vaultwarden allows equal names: nothing overwritten
 
     def test_empty_name_or_value_rejected_before_any_bw_call(self):
         for n, v in (("///", "v"), ("ok", "  \n")):
@@ -503,6 +506,60 @@ class VaultDepositTests(unittest.TestCase):
         self.assertEqual((v.server, v.org_id, v.collection_id), ("u", "o", "c"))
         with self.assertRaises(SystemExit):
             W.vault_from_env({"VW_URL": "u"})
+
+
+class SecretSubmit(unittest.TestCase):
+    """Discord drops a modal submit not answered in 3 s; a deposit takes longer, so defer first."""
+    def inter(self, uid=OWNER):
+        i = MagicMock()
+        i.user.id = uid
+        i.response.defer = AsyncMock()
+        i.response.send_message = AsyncMock()
+        i.followup.send = AsyncMock()
+        return i
+
+    def test_defers_before_the_slow_deposit_and_answers_by_followup(self):
+        order = []
+        i = self.inter()
+        i.response.defer.side_effect = lambda **k: order.append("defer")
+
+        class V:
+            async def deposit(self, n, v):
+                order.append("deposit")
+                return n
+        run(W.handle_secret_submit(i, OWNER, "tok", "plain-value", "/nonexistent", V(), "/x"))
+        # decrypt of an unprefixed value passes through, so deposit runs
+        self.assertEqual(order, ["defer", "deposit"])
+        i.response.send_message.assert_not_called()
+        self.assertIn("Vaultwarden Deposits", i.followup.send.call_args[0][0])
+        self.assertTrue(i.followup.send.call_args[1]["ephemeral"])
+
+    def test_vault_error_is_a_followup_error(self):
+        i = self.inter()
+
+        class V:
+            async def deposit(self, n, v):
+                raise W.GdprError(W.VAULT_ERR)
+        run(W.handle_secret_submit(i, OWNER, "tok", "plain-value", "/nonexistent", V(), "/x"))
+        i.response.defer.assert_awaited()
+        self.assertIn("nothing stored", i.followup.send.call_args[0][0])
+
+    def test_unexpected_error_is_answered_and_value_not_shown(self):
+        i = self.inter()
+
+        class V:
+            async def deposit(self, n, v):
+                raise RuntimeError("boom")
+        run(W.handle_secret_submit(i, OWNER, "tok", "plain-value", "/nonexistent", V(), "/x"))
+        msg = i.followup.send.call_args[0][0]
+        self.assertIn("nothing stored", msg)
+        self.assertNotIn("plain-value", msg)
+
+    def test_non_owner_is_refused_without_defer(self):
+        i = self.inter(uid=999)
+        run(W.handle_secret_submit(i, OWNER, "tok", "v", "/k", None, "/x"))
+        i.response.send_message.assert_awaited()
+        i.response.defer.assert_not_called()
 
 
 class SecretStore(unittest.TestCase):

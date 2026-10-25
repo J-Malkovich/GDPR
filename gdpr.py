@@ -181,18 +181,16 @@ class VaultDeposit:
         return (await self._bw(["unlock", "--passwordfile", self.password_file, "--raw"])).strip()
 
     async def deposit(self, name, value):
-        """Create one secure note in the Deposits collection. Returns the item name used."""
+        """Create one secure note in the Deposits collection. Returns the item name.
+
+        Vaultwarden allows equal names, so a repeated name becomes a second item and nothing is overwritten.
+        No sync/list round-trip: each bw call costs seconds."""
         name = clean_name(name)
         value = (value or "").strip("\r\n")
         if not value.strip():
             raise GdprError("empty value")
         async with self.lock:
             session = await self._session()
-            await self._bw(["sync"], BW_SESSION=session)
-            existing = json.loads(await self._bw(
-                ["list", "items", "--collectionid", self.collection_id, "--search", name], BW_SESSION=session) or "[]")
-            if any(i.get("name") == name for i in existing):
-                name = f"{name}.{int(time.time())}"
             item = {"type": 2, "name": name, "notes": value, "secureNote": {"type": 0},
                     "organizationId": self.org_id, "collectionIds": [self.collection_id], "folderId": None}
             await self._bw(["create", "item"], stdin=base64.b64encode(json.dumps(item).encode()), BW_SESSION=session)
@@ -469,6 +467,35 @@ class Gdpr:
             await self.log(guild, f"error: discord refused ({e.status})")
 
 
+async def handle_secret_submit(inter, owner_id, name, raw, key_path, vault, inbox):
+    """/secret modal submit. Defers FIRST: Discord drops an interaction not answered within 3 s and a
+    Vaultwarden deposit takes several seconds (bw login/unlock). All replies go through followup."""
+    if inter.user.id != owner_id:
+        return await inter.response.send_message("owner only", ephemeral=True)
+    await inter.response.defer(ephemeral=True)
+    try:
+        plain_arrival = not raw.strip().startswith((SECRET_PREFIX, SECRET_PREFIX_GZ))
+        if plain_arrival:
+            print("warning: /secret value arrived without the encryption marker (plugin off?)", flush=True)
+        value = decrypt_value(raw, key_path)
+        if vault:
+            where = f"`{await vault.deposit(name, value)}` in the Vaultwarden Deposits collection"
+        else:
+            where = f"`{os.path.basename(store_secret(inbox, name, value))}` in the secrets inbox"
+    except GdprError as e:
+        return await inter.followup.send(f"error: {e}", ephemeral=True)
+    except OSError as e:
+        return await inter.followup.send(f"error: could not write ({e.__class__.__name__})", ephemeral=True)
+    except Exception:
+        traceback.print_exc()  # traceback never contains the value: it is not in any exception text
+        return await inter.followup.send("error: unexpected failure, nothing stored, see the GDPR logs", ephemeral=True)
+    await inter.followup.send(
+        f"stored as {where} ({len(value.strip())} chars). "
+        "Tell the agent who should handle it; the value is not in chat."
+        + (" WARNING: it arrived UNENCRYPTED (Vencord plugin off?). Discord saw it: rotate this secret." if plain_arrival else ""),
+        ephemeral=True)
+
+
 def main():
     from discord import app_commands
     cfg = load_config()
@@ -507,27 +534,7 @@ def main():
         svalue = discord.ui.TextInput(label="Value", style=discord.TextStyle.paragraph, max_length=4000, custom_id="wsec:value")
 
         async def on_submit(self, inter: discord.Interaction):
-            if inter.user.id != cfg["owner_id"]:
-                return await inter.response.send_message("owner only", ephemeral=True)
-            try:
-                raw = str(self.svalue)
-                plain_arrival = not raw.strip().startswith((SECRET_PREFIX, SECRET_PREFIX_GZ))
-                if plain_arrival:
-                    print("warning: /secret value arrived without the encryption marker (plugin off?)", flush=True)
-                value = decrypt_value(raw, key_path)
-                if vault:
-                    where = f"`{await vault.deposit(str(self.sname), value)}` in the Vaultwarden Deposits collection"
-                else:
-                    where = f"`{os.path.basename(store_secret(inbox, str(self.sname), value))}` in the secrets inbox"
-            except GdprError as e:
-                return await inter.response.send_message(f"error: {e}", ephemeral=True)
-            except OSError as e:
-                return await inter.response.send_message(f"error: could not write ({e.__class__.__name__})", ephemeral=True)
-            await inter.response.send_message(
-                f"stored as {where} ({len(value.strip())} chars). "
-                "Tell the agent who should handle it; the value is not in chat."
-                + (" WARNING: it arrived UNENCRYPTED (Vencord plugin off?). Discord saw it: rotate this secret." if plain_arrival else ""),
-                ephemeral=True)
+            await handle_secret_submit(inter, cfg["owner_id"], str(self.sname), str(self.svalue), key_path, vault, inbox)
 
     @tree.command(name="secret", description="Store a secret in the GDPR inbox (hidden form, not in chat)")
     async def secret_(inter: discord.Interaction):
