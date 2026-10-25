@@ -1080,7 +1080,8 @@ def board(list_id="L1", labels=(), comments=0, upd="2026-10-25T10:00:00.000Z", t
         vals.append(dict(cardId="c1", customFieldId="f2", content=agent))
     return dict(included=dict(
         lists=[dict(id="L1", name="In Progress"), dict(id="L2", name="Reviewing"), dict(id="L3", name="Backlog and ideas")],
-        labels=[dict(id="b", name="blocked"), dict(id="h", name="handoff")],
+        labels=[dict(id="b", name="blocked"), dict(id="h", name="handoff"),
+                dict(id="o", name="agent:ops"), dict(id="q", name="agent:qa"), dict(id="x", name="agent:nobody")],
         cardLabels=[dict(cardId="c1", labelId=x) for x in labels],
         customFields=[dict(id="f1", name="notify_thread"), dict(id="f2", name="notify_agent")],
         customFieldValues=vals,
@@ -1175,6 +1176,26 @@ class CardWatch(unittest.TestCase):
         w2 = self.watcher([1e10])
         w2.scan(board("L1", closed=True))
         self.assertEqual(w2.scan(board("L2", closed=True)), [])
+
+    def test_agent_label_gives_mention(self):
+        w = W.watcher_from_env(dict(WENV, AGENT_IDS="dev=11,ops=12,qa=13"))
+        w.now = lambda: 1e10
+        w.scan(board("L1", labels=["o"], agent=None))
+        tid, aid, text = w.scan(board("L2", labels=["o"], agent=None))[0]
+        self.assertEqual((tid, aid), (555, 12))
+        self.assertTrue(text.startswith("<@12> "))
+
+    def test_notify_agent_overrides_label(self):
+        w = W.watcher_from_env(dict(WENV, AGENT_IDS="dev=11,ops=12,qa=13"))
+        w.scan(board("L1", labels=["o"], agent="13"))
+        self.assertEqual(w.scan(board("L2", labels=["o"], agent="13"))[0][1], 13)
+
+    def test_unknown_or_missing_label_no_mention(self):
+        w = W.watcher_from_env(dict(WENV, AGENT_IDS="dev=11,ops=12"))
+        w.scan(board("L1", labels=["x", "h"], agent=None))
+        out = w.scan(board("L2", labels=["x", "h"], agent=None))
+        self.assertEqual(out[0][1], None)
+        self.assertFalse(out[0][2].startswith("<@"))
 
     def test_no_agent_field_posts_without_mention(self):
         w = self.watcher([1e10])

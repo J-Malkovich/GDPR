@@ -401,7 +401,7 @@ on the host. When the owner tells an agent a file name, the agent should:
 - `RESTRICTED_AGENTS` (optional): names only the owner may bring into threads.
 - `PLANKA_URL`, `PLANKA_BOARD_ID`, `PLANKA_API_KEY` or `PLANKA_API_KEY_FILE` (all optional, card watcher; off
   unless all are set). GDPR reads the board (GET only, give it a read-only Planka user), and for a card that has
-  the custom fields `notify_thread` (Discord thread id) and `notify_agent` (user id to mention) it posts ONE line
+  the custom fields `notify_thread` (Discord thread id) and `notify_agent` (optional: user id to mention; without it GDPR mentions the agent named by the card's `agent:<name>` label, looked up in `AGENT_IDS`) it posts ONE line
   in that thread when the card enters the Reviewing list, gets the label `blocked`, or sits In Progress with no
   activity (card change or new comment) for `PLANKA_STALL_HOURS` (default 24). Each event is posted once; after a
   restart the first poll only records the current state. Also optional: `PLANKA_POLL_SECONDS` (default 180,
