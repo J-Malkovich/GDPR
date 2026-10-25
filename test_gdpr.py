@@ -1069,5 +1069,153 @@ class DoneText(unittest.TestCase):
         self.assertNotIn("macros", W.load_config(ENV))
 
 
+WENV = dict(PLANKA_URL="https://kanban.example", PLANKA_BOARD_ID="b1", PLANKA_API_KEY="fake-key")
+
+
+def board(list_id="L1", labels=(), comments=0, upd="2026-10-25T10:00:00.000Z", thread="555", agent="11", closed=False):
+    vals = []
+    if thread is not None:
+        vals.append(dict(cardId="c1", customFieldId="f1", content=thread))
+    if agent is not None:
+        vals.append(dict(cardId="c1", customFieldId="f2", content=agent))
+    return dict(included=dict(
+        lists=[dict(id="L1", name="In Progress"), dict(id="L2", name="Reviewing"), dict(id="L3", name="Backlog and ideas")],
+        labels=[dict(id="b", name="blocked"), dict(id="h", name="handoff")],
+        cardLabels=[dict(cardId="c1", labelId=x) for x in labels],
+        customFields=[dict(id="f1", name="notify_thread"), dict(id="f2", name="notify_agent")],
+        customFieldValues=vals,
+        cards=[dict(id="c1", name="Test  card", listId=list_id, isClosed=closed, commentsTotal=comments,
+                    updatedAt=upd, listChangedAt=upd, createdAt=upd)]))
+
+
+class CardWatch(unittest.TestCase):
+    def watcher(self, clock):
+        w = W.watcher_from_env(dict(WENV, PLANKA_STALL_HOURS="2"))
+        w.now = lambda: clock[0]
+        return w
+
+    def test_off_without_env(self):
+        self.assertIsNone(W.watcher_from_env({}))
+        self.assertIsNone(W.watcher_from_env(dict(WENV, PLANKA_API_KEY="")))
+
+    def test_key_from_file(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".key") as f:
+            f.write("planka_api_key=secret-from-file\n")
+            f.flush()
+            w = W.watcher_from_env({k: v for k, v in WENV.items() if k != "PLANKA_API_KEY"} | {"PLANKA_API_KEY_FILE": f.name})
+        self.assertEqual(w.cfg["key"], "secret-from-file")
+
+    def test_bad_url(self):
+        with self.assertRaises(SystemExit):
+            W.watcher_from_env(dict(WENV, PLANKA_URL="kanban.example"))
+
+    def test_reviewing_posts_once(self):
+        clock = [1e10]
+        w = self.watcher(clock)
+        self.assertEqual(w.scan(board("L1")), [])          # seed
+        out = w.scan(board("L2"))
+        self.assertEqual(len(out), 1)
+        tid, aid, text = out[0]
+        self.assertEqual((tid, aid), (555, 11))
+        self.assertTrue(text.startswith("<@11> "))
+        self.assertIn("Test card", text)
+        self.assertIn("Reviewing", text)
+        self.assertIn("https://kanban.example/cards/c1", text)
+        self.assertEqual(w.scan(board("L2")), [])           # no repeat
+        self.assertEqual(w.scan(board("L2", comments=3)), [])   # comments ignored
+        self.assertEqual(w.scan(board("L1")), [])
+        self.assertEqual(len(w.scan(board("L2"))), 1)       # leaving and re-entering is a new event
+
+    def test_unnamed_lists_ok(self):  # real Planka boards have archive/trash lists with name null
+        w = self.watcher([1e10])
+        b = board("L1")
+        b["included"]["lists"].append(dict(id="L9", name=None))
+        self.assertEqual(w.scan(b), [])
+
+    def test_restart_does_not_repeat(self):
+        w = self.watcher([1e10])
+        self.assertEqual(w.scan(board("L2")), [])           # already in Reviewing at first scan
+
+    def test_blocked_once(self):
+        w = self.watcher([1e10])
+        w.scan(board("L1"))
+        self.assertEqual(len(w.scan(board("L1", labels=["b"]))), 1)
+        self.assertEqual(w.scan(board("L1", labels=["b"])), [])
+        self.assertEqual(w.scan(board("L1", labels=["h"])), [])   # other labels ignored
+
+    def test_stall_once_and_activity_resets(self):
+        clock = [1e10]
+        w = self.watcher(clock)
+        upd = "2026-10-25T10:00:00.000Z"
+        t0 = W.CardWatcher._ts(upd)
+        clock[0] = t0 + 3600
+        w.scan(board("L1", upd=upd))
+        clock[0] = t0 + 3 * 3600
+        out = w.scan(board("L1", upd=upd))
+        self.assertEqual(len(out), 1)
+        self.assertIn("no activity", out[0][2])
+        self.assertEqual(w.scan(board("L1", upd=upd)), [])
+        clock[0] = t0 + 6 * 3600
+        self.assertEqual(w.scan(board("L1", upd=upd)), [])  # still the same stall: no repeat
+        w.scan(board("L1", upd=upd, comments=1))            # a comment is activity
+        self.assertEqual(w.scan(board("L1", upd=upd, comments=1)), [])
+
+    def test_not_in_progress_never_stalls(self):
+        clock = [1e10]
+        w = self.watcher(clock)
+        w.scan(board("L3"))
+        self.assertEqual(w.scan(board("L3")), [])
+
+    def test_cards_without_routing_or_closed_ignored(self):
+        w = self.watcher([1e10])
+        w.scan(board("L1", thread=None))
+        self.assertEqual(w.scan(board("L2", thread=None)), [])
+        self.assertEqual(w.scan(board("L2", thread="abc")), [])
+        w2 = self.watcher([1e10])
+        w2.scan(board("L1", closed=True))
+        self.assertEqual(w2.scan(board("L2", closed=True)), [])
+
+    def test_no_agent_field_posts_without_mention(self):
+        w = self.watcher([1e10])
+        w.scan(board("L1", agent=None))
+        out = w.scan(board("L2", agent=None))
+        self.assertEqual(out[0][1], None)
+        self.assertFalse(out[0][2].startswith("<@"))
+
+    def test_loop_posts_one_line_and_survives_errors(self):
+        w = self.watcher([1e10])
+        g = make_guild()
+        client = MagicMock()
+        client.get_channel.return_value = g.thread
+        boards = iter([board("L1"), RuntimeError("down"), board("L2"), board("L2"), board("L2")])
+
+        polls = [0]
+
+        def fetch(cfg):
+            polls[0] += 1
+            b = next(boards, board("L2"))
+            if isinstance(b, Exception):
+                raise b
+            return b
+
+        async def go():
+            w.cfg["poll"] = 0
+            task = asyncio.create_task(W.watch_cards(w, client, fetch))
+            for _ in range(500):   # to_thread needs real time; wait until the 5 polls were consumed
+                await asyncio.sleep(0.01)
+                if g.thread.send.called and polls[0] >= 5:
+                    break
+            task.cancel()
+        try:
+            run(go())
+        except StopIteration:
+            pass
+        self.assertEqual(g.thread.send.call_count, 1)
+        text = g.thread.send.call_args[0][0]
+        self.assertTrue(text.startswith("<@11> "))
+        self.assertNotIn("fake-key", text)
+
+
 if __name__ == "__main__":
     unittest.main()
