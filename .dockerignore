@@ -1,0 +1,10 @@
+*.env
+.env*
+*age_key*
+*.key
+*.pem
+vw_*
+.git
+__pycache__/
+*.pyc
+vencord-plugin/node_modules

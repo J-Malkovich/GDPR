@@ -6,3 +6,4 @@ __pycache__/
 gdpr_age_key
 gdpr_age_key.pub
 secrets/
+vw_*
