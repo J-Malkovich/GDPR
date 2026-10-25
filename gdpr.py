@@ -73,7 +73,7 @@ def load_config(env=None):
             cfg["alert_bot_ids"] = {int(x) for x in env.get("ALERT_BOT_IDS", "").split(",") if x.strip()}
             if not cfg["alert_bot_ids"]:
                 raise SystemExit("gdpr: ALERT_CHANNEL_ID needs ALERT_BOT_IDS (ids of the bots/webhooks whose posts count as alerts)")
-            cfg["alert_dedupe_seconds"] = int(env.get("ALERT_DEDUPE_MINUTES", "30")) * 60
+            cfg["alert_dedupe_seconds"] = int(env.get("ALERT_DEDUPE_MINUTES", "60")) * 60
             cfg["alert_max_per_hour"] = int(env.get("ALERT_MAX_THREADS_PER_HOUR", "5"))
         cfg["owner_aliases"] = OWNER_ALIASES | ({owner_name.lower()} if owner_name else set())
     except ValueError:
@@ -270,6 +270,7 @@ class Gdpr:
     def __init__(self, cfg, bot_id=0):
         self.cfg, self.bot_id = cfg, bot_id
         self.agent_ids = set(cfg["agents"].values())
+        self.alert_lock = asyncio.Lock()  # one open-or-reuse at a time, so concurrent alerts cannot race
         self.alert_threads = {}   # alert key -> (thread id, time.monotonic() of the last post)
         self.alert_opened = []    # time.monotonic() of each recent alert thread (rate cap)
         self.last_correction = {}  # (sender id, thread id) -> time.monotonic() of the last correction
@@ -386,6 +387,10 @@ class Gdpr:
                               + ", ".join(self.who(i) for i in ids))
 
     async def handle_alert(self, message):
+        async with self.alert_lock:
+            await self._handle_alert(message)
+
+    async def _handle_alert(self, message):
         """A post by an alert bot in the alert channel that really mentions an agent: open (or reuse) one
         private thread with that agent and relay the alert. Never wakes the owner or non-agents."""
         ids = {int(i) for i in MENTION.findall(message.content or "")}
@@ -394,14 +399,14 @@ class Gdpr:
             return
         m = BOLD_RE.search(message.content)
         title = " ".join((m.group(1) if m else MENTION.sub("", message.content).strip().split("\n")[0]).split())
-        key = (title.lower(), tuple(sorted(i for _, i in targets)))
+        key = tuple(sorted(i for _, i in targets))  # per agent set, not per title: a storm stays in one thread
         now = time.monotonic()
         guild = message.guild
         text = f"Alert from <#{message.channel.id}> ({message.jump_url}):\n" + message.content[:1600]
         allowed = discord.AllowedMentions(users=[discord.Object(id=i) for _, i in targets], roles=False,
                                           everyone=False, replied_user=False)
         known = self.alert_threads.get(key)
-        if known and now - known[1] < self.cfg.get("alert_dedupe_seconds", 1800):
+        if known and now - known[1] < self.cfg.get("alert_dedupe_seconds", 3600):
             try:
                 t = await self.thread_of(guild, known[0])
                 if getattr(t, "archived", False):

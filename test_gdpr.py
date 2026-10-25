@@ -1246,7 +1246,7 @@ class CardWatch(unittest.TestCase):
 
 
 
-ACFG = dict(CFG, alert_channel_id=500, alert_bot_ids={77}, alert_dedupe_seconds=1800, alert_max_per_hour=2)
+ACFG = dict(CFG, alert_channel_id=500, alert_bot_ids={77}, alert_dedupe_seconds=3600, alert_max_per_hour=2)
 AL = 500
 
 
@@ -1300,15 +1300,48 @@ class AlertRelay(unittest.TestCase):
         self.feed("**Alert A** <@12>")
         self.assertEqual(self.g.chats.create_thread.call_count, 2)
 
+    def test_different_titles_same_agent_share_thread(self):
+        self.feed("**Disk high** <@12>")
+        self.feed("**Host down** <@12>")
+        self.assertEqual(self.g.chats.create_thread.call_count, 1)
+        self.assertEqual(self.g.thread.send.call_count, 2)
+
+    def test_different_agent_gets_own_thread(self):
+        self.feed("**A** <@12>")
+        self.feed("**B** <@11>")
+        self.assertEqual(self.g.chats.create_thread.call_count, 2)
+
+    def test_window_slides(self):
+        self.feed("**A** <@12>")
+        k = next(iter(self.w.alert_threads))
+        self.w.alert_threads[k] = (300, self.w.alert_threads[k][1] - 3000)
+        self.feed("**B** <@12>")  # 50 min after the first: reused, window restarts
+        self.assertLess(W.time.monotonic() - self.w.alert_threads[k][1], 5)
+        self.w.alert_threads[k] = (300, self.w.alert_threads[k][1] - 3000)
+        self.feed("**C** <@12>")  # 50 min after the last: still one thread
+        self.assertEqual(self.g.chats.create_thread.call_count, 1)
+
+    def test_concurrent_same_agent_one_thread(self):
+        async def go():
+            await asyncio.gather(*(self.w.handle_message(alert_msg(self.g, f"**Alert {n}** <@12>")) for n in "ABCDEF"))
+        orig = self.g.chats.create_thread
+        async def slow(*a, **k):
+            await asyncio.sleep(0.01)
+            return await orig(*a, **k)
+        self.g.chats.create_thread = slow
+        run(go())
+        self.assertEqual(orig.call_count, 1)
+        self.assertEqual(self.g.thread.send.call_count, 6)
+
     def test_hourly_cap(self):
-        for n in "ABC":
-            self.feed(f"**Alert {n}** <@12>")
+        for n, a in zip("ABC", (12, 11, 13)):
+            self.feed(f"**Alert {n}** <@{a}>")
         self.assertEqual(self.g.chats.create_thread.call_count, 2)
         self.assertIn("cap reached", self.g.hq.send.call_args[0][0])
 
     def test_hourly_cap_concurrent(self):
         async def go():
-            await asyncio.gather(*(self.w.handle_message(alert_msg(self.g, f"**Alert {n}** <@12>")) for n in "ABCDEF"))
+            await asyncio.gather(*(self.w.handle_message(alert_msg(self.g, f"**Alert {n}** <@{a}>")) for n, a in zip("ABCDEF", (11, 12, 13, 11, 12, 13))))
         orig = self.g.chats.create_thread
         async def slow(*a, **k):
             await asyncio.sleep(0.01)
