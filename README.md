@@ -402,8 +402,8 @@ on the host. When the owner tells an agent a file name, the agent should:
 - `ALERT_CHANNEL_ID`, `ALERT_BOT_IDS` (optional, alert relay; off unless both are set): ids of the alerts channel and of
   the bots/webhooks whose posts there count as alerts. When such a post really mentions an agent in `AGENT_IDS`,
   GDPR opens a private thread (owner + that agent) named `alert-<bold title>` and posts the alert there. The owner
-  is never woken by this alone. A repeat of the same title and agent within `ALERT_DEDUPE_MINUTES` (default 30)
-  goes into the same thread; at most `ALERT_MAX_THREADS_PER_HOUR` (default 5) new threads, then one line in HQ.
+  is never woken by this alone. Any further alert mentioning the same agent(s) within `ALERT_DEDUPE_MINUTES` (default 60, sliding)
+  goes into the same thread (one thread per storm); at most `ALERT_MAX_THREADS_PER_HOUR` (default 5) new threads, then one line in HQ.
   GDPR needs View + Read History in the alerts channel.
 - `PLANKA_URL`, `PLANKA_BOARD_ID`, `PLANKA_API_KEY` or `PLANKA_API_KEY_FILE` (all optional, card watcher; off
   unless all are set). GDPR reads the board (GET only, give it a read-only Planka user), and for a card that has
