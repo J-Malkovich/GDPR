@@ -523,10 +523,13 @@ class CardWatcher:
         lists = {l["id"]: (l.get("name") or "").strip().lower() for l in inc.get("lists", [])}
         labels = {l["id"]: (l.get("name") or "").strip().lower() for l in inc.get("labels", [])}
         fields = {f["id"]: f["name"] for f in inc.get("customFields", [])}
-        blocked_by_card, values = {}, {}
+        blocked_by_card, values, agent_label = {}, {}, {}
         for cl in inc.get("cardLabels", []):
-            if labels.get(cl["labelId"]) == "blocked":
+            name = labels.get(cl["labelId"]) or ""
+            if name == "blocked":
                 blocked_by_card[cl["cardId"]] = True
+            elif name.startswith("agent:") and name[6:] in self.cfg.get("agents", {}):
+                agent_label.setdefault(cl["cardId"], str(self.cfg["agents"][name[6:]]))
         for v in inc.get("customFieldValues", []):
             values.setdefault(v["cardId"], {})[fields.get(v["customFieldId"])] = (v.get("content") or "").strip()
         review, progress = self.cfg["review_list"], self.cfg["progress_list"]
@@ -539,6 +542,8 @@ class CardWatcher:
             thread, agent = v.get("notify_thread", ""), v.get("notify_agent", "")
             if not thread.isdigit():
                 continue
+            if not agent.isdigit():   # no notify_agent override: mention the agent named by the card's agent:<name> label
+                agent = agent_label.get(c["id"], "")
             seen.add(c["id"])
             lst = lists.get(c["listId"], "")
             blocked = bool(blocked_by_card.get(c["id"]))
@@ -583,8 +588,13 @@ def watcher_from_env(env):
         return None
     if not url.startswith(("http://", "https://")):
         raise SystemExit("gdpr: PLANKA_URL must start with http:// or https://")
+    agents = {}   # AGENT_IDS (name=id,...): the card's agent:<name> label picks who is mentioned
+    for part in env.get("AGENT_IDS", "").split(","):
+        n, _, i = part.partition("=")
+        if n.strip() and i.strip().isdigit():
+            agents[n.strip().lower()] = int(i)
     try:
-        cfg = dict(url=url, board=board, key=key, poll=max(30, int(env.get("PLANKA_POLL_SECONDS", "180"))),
+        cfg = dict(url=url, board=board, key=key, agents=agents, poll=max(30, int(env.get("PLANKA_POLL_SECONDS", "180"))),
                    stall_hours=float(env.get("PLANKA_STALL_HOURS", "24")),
                    review_list=env.get("PLANKA_REVIEW_LIST", "Reviewing").strip().lower(),
                    progress_list=env.get("PLANKA_PROGRESS_LIST", "In Progress").strip().lower())
