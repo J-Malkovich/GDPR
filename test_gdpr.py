@@ -387,6 +387,124 @@ class DecryptValue(unittest.TestCase):
             W.decrypt_value(self.enc("x"), "/nonexistent")
 
 
+FAKE_BW = r"""#!/usr/bin/env python3
+import sys, os, json, base64
+log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
+mode_file = log + ".mode"
+a = sys.argv[1:]
+rec = {"argv": a, "appdata": os.environ.get("BITWARDENCLI_APPDATA_DIR"), "session": os.environ.get("BW_SESSION"),
+       "clientid": os.environ.get("BW_CLIENTID"), "node": os.environ.get("NODE_OPTIONS")}
+if a[:2] == ["create", "item"]:
+    rec["stdin"] = sys.stdin.read()
+open(log, "a").write(json.dumps(rec) + "\n")
+mode = open(mode_file).read().strip() if os.path.exists(mode_file) else "ok"
+if mode == "down" and a[0] in ("login", "unlock", "sync", "create", "list"):
+    sys.stderr.write("SECRETLEAK connection refused"); sys.exit(1)
+if a[:2] == ["login", "--check"]:
+    sys.exit(0 if os.path.exists(log + ".in") else 1)
+if a[:2] == ["login", "--apikey"]:
+    open(log + ".in", "w").close(); sys.exit(0)
+if a[0] == "unlock": print("SESSIONKEY"); sys.exit(0)
+if a[0] == "list": print(open(log + ".list").read() if os.path.exists(log + ".list") else "[]"); sys.exit(0)
+sys.exit(0)
+"""
+
+
+class VaultDepositTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile, stat
+        self.d = tempfile.mkdtemp()
+        self.bw = os.path.join(self.d, "bw")
+        open(self.bw, "w").write(FAKE_BW)
+        os.chmod(self.bw, 0o755)
+        self.log = os.path.join(self.d, "log")
+        for n, v in (("id", "user.abc"), ("sec", "CLIENTSECRETVALUE")):
+            with open(os.path.join(self.d, n), "w") as f:
+                f.write(v + "\n")
+        with open(os.path.join(self.d, "pw"), "w") as f:
+            f.write("MASTERPW\n")
+        self.v = W.VaultDeposit(bw=self.bw, server="https://vw.invalid", org_id="ORG", collection_id="COL",
+                                appdata=os.path.join(self.d, "appdata"),
+                                clientid_file=os.path.join(self.d, "id"), clientsecret_file=os.path.join(self.d, "sec"),
+                                password_file=os.path.join(self.d, "pw"))
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def calls(self):
+        import json
+        return [json.loads(l) for l in open(self.log)] if os.path.exists(self.log) else []
+
+    def test_deposit_creates_item_via_stdin_only(self):
+        import base64, json
+        name = run(self.v.deposit("my token!", "s3cretvalue\n"))
+        self.assertEqual(name, "my_token_")
+        cs = self.calls()
+        create = [c for c in cs if c["argv"][:2] == ["create", "item"]][0]
+        item = json.loads(base64.b64decode(create["stdin"]))
+        self.assertEqual((item["notes"], item["name"], item["organizationId"], item["collectionIds"]),
+                         ("s3cretvalue", "my_token_", "ORG", ["COL"]))
+        self.assertEqual(create["session"], "SESSIONKEY")
+        self.assertEqual(create["appdata"], os.path.join(self.d, "appdata"))
+        # secret value, client secret, master password never on any command line
+        for c in cs:
+            line = " ".join(c["argv"])
+            for bad in ("s3cretvalue", "CLIENTSECRETVALUE", "MASTERPW", "SESSIONKEY"):
+                self.assertNotIn(bad, line)
+        unlock = [c for c in cs if c["argv"][0] == "unlock"][0]
+        self.assertIn("--passwordfile", unlock["argv"])
+        login = [c for c in cs if c["argv"][:2] == ["login", "--apikey"]][0]
+        self.assertEqual(login["clientid"], "user.abc")
+        self.assertEqual(login["node"], "--experimental-global-webcrypto")
+
+    def test_second_deposit_reuses_login(self):
+        run(self.v.deposit("a", "1"))
+        run(self.v.deposit("b", "2"))
+        self.assertEqual(len([c for c in self.calls() if c["argv"][:2] == ["login", "--apikey"]]), 1)
+
+    def test_same_name_gets_timestamp_suffix(self):
+        open(self.log + ".list", "w").write('[{"name": "tok"}]')
+        import re
+        self.assertTrue(re.fullmatch(r"tok\.\d+", run(self.v.deposit("tok", "v"))))
+
+    def test_empty_name_or_value_rejected_before_any_bw_call(self):
+        for n, v in (("///", "v"), ("ok", "  \n")):
+            with self.assertRaises(W.GdprError):
+                run(self.v.deposit(n, v))
+        self.assertEqual(self.calls(), [])
+
+    def test_vault_down_fails_closed_with_nothing_stored_or_leaked(self):
+        import io, contextlib
+        open(self.log + ".mode", "w").write("down")
+        before = set(os.listdir(self.d))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(W.GdprError) as cm:
+                run(self.v.deposit("tok", "s3cretvalue"))
+        self.assertEqual(str(cm.exception), W.VAULT_ERR)
+        self.assertNotIn("SECRETLEAK", out.getvalue() + str(cm.exception))
+        self.assertNotIn("s3cretvalue", out.getvalue())
+        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["create", "item"]])
+        self.assertLessEqual(set(os.listdir(self.d)) - before, {"log", "log.in"})  # nothing else written
+
+    def test_missing_bw_binary_and_unreadable_credentials_fail_closed(self):
+        v = W.VaultDeposit(bw="/nonexistent/bw", collection_id="C", org_id="O", appdata=self.d)
+        with self.assertRaises(W.GdprError):
+            run(v.deposit("a", "b"))
+        v = W.VaultDeposit(bw=self.bw, collection_id="C", org_id="O", appdata=self.d,
+                           clientid_file="/nonexistent", clientsecret_file="/nonexistent", password_file="/nonexistent")
+        with self.assertRaises(W.GdprError):
+            run(v.deposit("a", "b"))
+
+    def test_vault_from_env_off_on_and_half_configured(self):
+        self.assertIsNone(W.vault_from_env({}))
+        v = W.vault_from_env({"VW_URL": "u", "VW_ORG_ID": "o", "VW_COLLECTION_ID": "c"})
+        self.assertEqual((v.server, v.org_id, v.collection_id), ("u", "o", "c"))
+        with self.assertRaises(SystemExit):
+            W.vault_from_env({"VW_URL": "u"})
+
+
 class SecretStore(unittest.TestCase):
     def test_writes_600_and_no_overwrite(self):
         import os, stat, tempfile

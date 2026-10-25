@@ -3,6 +3,9 @@
 Env: GDPR_TOKEN, OWNER_ID, HQ_ID, CHATS_ID, AGENT_IDS (name=id,name=id); optional OWNER_NAME,
 RESTRICTED_AGENTS. `python gdpr.py setup <dir>` prepares Discord, .env, key and secrets folder (README B3).
 """
+import asyncio
+import base64
+import json
 import os
 import re
 import traceback
@@ -102,6 +105,113 @@ def decrypt_value(value, key_path):
         return raw.decode("utf-8")
     except Exception as e:
         raise GdprError(f"could not decrypt the value ({e.__class__.__name__}); nothing stored, check the key and resend")
+
+
+def clean_name(name):
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", (name or "").strip()).lstrip("._-")[:64]
+    if not name:
+        raise GdprError("give it a name with at least one letter or digit")
+    return name
+
+
+class VaultDeposit:
+    """Deposits secrets into one Vaultwarden collection through the bw CLI.
+
+    - The secret goes to bw on stdin (base64 JSON), never on a command line.
+    - bw state lives in `appdata` (a tmpfs in the container); nothing else is written to disk.
+    - API key and master password are read from root-only files and handed to the child process env only.
+    - bw output and command lines are never logged; failures are reported as a fixed string.
+    - No fallback: any failure raises GdprError and nothing is stored anywhere else."""
+
+    TIMEOUT = 45
+
+    def __init__(self, bw="bw", server="", org_id="", collection_id="", appdata="/tmp/bw",
+                 clientid_file="/run/secrets/vw_client_id", clientsecret_file="/run/secrets/vw_client_secret",
+                 password_file="/run/secrets/vw_master", ca_file=""):
+        self.bw, self.server, self.org_id, self.collection_id = bw, server, org_id, collection_id
+        self.appdata, self.ca_file = appdata, ca_file
+        self.clientid_file, self.clientsecret_file, self.password_file = clientid_file, clientsecret_file, password_file
+        self.lock = asyncio.Lock()
+
+    def _env(self, **extra):
+        env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": self.appdata,
+               "BITWARDENCLI_APPDATA_DIR": self.appdata, "BW_NOINTERACTION": "true",
+               "NODE_OPTIONS": "--experimental-global-webcrypto"}  # needed by bw against this Vaultwarden
+        if self.ca_file:
+            env["NODE_EXTRA_CA_CERTS"] = self.ca_file
+        env.update(extra)
+        return env
+
+    async def _bw(self, args, stdin=None, **env):
+        """Run bw; returns stdout text. Raises GdprError('vault unavailable') without leaking any output."""
+        try:
+            p = await asyncio.create_subprocess_exec(
+                self.bw, *args, "--nointeraction", env=self._env(**env),
+                stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await asyncio.wait_for(p.communicate(stdin), self.TIMEOUT)
+        except (OSError, asyncio.TimeoutError) as e:
+            try:
+                p.kill()
+            except Exception:
+                pass
+            print(f"vault: bw {args[0]} failed ({e.__class__.__name__})", flush=True)
+            raise GdprError(VAULT_ERR)
+        if p.returncode != 0:
+            print(f"vault: bw {args[0]} failed (rc={p.returncode})", flush=True)
+            raise GdprError(VAULT_ERR)
+        return out.decode("utf-8", "replace")
+
+    def _read(self, path):
+        try:
+            with open(path) as f:
+                return f.readline().strip()
+        except OSError:
+            print("vault: credential file unreadable", flush=True)
+            raise GdprError(VAULT_ERR)
+
+    async def _session(self):
+        try:
+            await self._bw(["login", "--check"])
+        except GdprError:
+            if self.server:
+                await self._bw(["config", "server", self.server])
+            await self._bw(["login", "--apikey"], BW_CLIENTID=self._read(self.clientid_file),
+                           BW_CLIENTSECRET=self._read(self.clientsecret_file))
+        return (await self._bw(["unlock", "--passwordfile", self.password_file, "--raw"])).strip()
+
+    async def deposit(self, name, value):
+        """Create one secure note in the Deposits collection. Returns the item name used."""
+        name = clean_name(name)
+        value = (value or "").strip("\r\n")
+        if not value.strip():
+            raise GdprError("empty value")
+        async with self.lock:
+            session = await self._session()
+            await self._bw(["sync"], BW_SESSION=session)
+            existing = json.loads(await self._bw(
+                ["list", "items", "--collectionid", self.collection_id, "--search", name], BW_SESSION=session) or "[]")
+            if any(i.get("name") == name for i in existing):
+                name = f"{name}.{int(time.time())}"
+            item = {"type": 2, "name": name, "notes": value, "secureNote": {"type": 0},
+                    "organizationId": self.org_id, "collectionIds": [self.collection_id], "folderId": None}
+            await self._bw(["create", "item"], stdin=base64.b64encode(json.dumps(item).encode()), BW_SESSION=session)
+            return name
+
+
+VAULT_ERR = "the vault did not accept it; nothing stored, try again later"
+
+
+def vault_from_env(env):
+    """VaultDeposit when VW_* is configured, None for the file inbox. A half-set config is an error (fail closed)."""
+    keys = ("VW_URL", "VW_ORG_ID", "VW_COLLECTION_ID")
+    if not any(env.get(k) for k in keys):
+        return None
+    missing = [k for k in keys if not env.get(k)]
+    if missing:
+        raise SystemExit(f"Vaultwarden deposit is half configured, missing: {', '.join(missing)}")
+    return VaultDeposit(server=env["VW_URL"], org_id=env["VW_ORG_ID"], collection_id=env["VW_COLLECTION_ID"],
+                        bw=env.get("BW_BIN", "bw"), appdata=env.get("BW_APPDATA", "/tmp/bw"), ca_file=env.get("VW_CA_FILE", ""))
 
 
 def store_secret(inbox, name, value):
@@ -384,6 +494,7 @@ def main():
             await inter.followup.send("error: unexpected failure, see the GDPR logs", ephemeral=True)
 
     inbox = os.environ.get("SECRET_INBOX", "/inbox")
+    vault = vault_from_env(os.environ)  # None = file inbox (no VW_* set); never a fallback at runtime
 
     key_path = os.environ.get("GDPR_AGE_KEY", "/run/secrets/gdpr_age_key")
 
@@ -404,13 +515,16 @@ def main():
                 if plain_arrival:
                     print("warning: /secret value arrived without the encryption marker (plugin off?)", flush=True)
                 value = decrypt_value(raw, key_path)
-                path = store_secret(inbox, str(self.sname), value)
+                if vault:
+                    where = f"`{await vault.deposit(str(self.sname), value)}` in the Vaultwarden Deposits collection"
+                else:
+                    where = f"`{os.path.basename(store_secret(inbox, str(self.sname), value))}` in the secrets inbox"
             except GdprError as e:
                 return await inter.response.send_message(f"error: {e}", ephemeral=True)
             except OSError as e:
                 return await inter.response.send_message(f"error: could not write ({e.__class__.__name__})", ephemeral=True)
             await inter.response.send_message(
-                f"stored as `{os.path.basename(path)}` ({len(value.strip())} chars) in the secrets inbox. "
+                f"stored as {where} ({len(value.strip())} chars). "
                 "Tell the agent who should handle it; the value is not in chat."
                 + (" WARNING: it arrived UNENCRYPTED (Vencord plugin off?). Discord saw it: rotate this secret." if plain_arrival else ""),
                 ephemeral=True)

@@ -1,0 +1,14 @@
+# Optional: deposit /secret values into a Vaultwarden collection instead of the ./secrets folder.
+# Use: docker compose -f docker-compose.yml -f docker-compose.vault.yml up -d --build
+# Set VW_URL, VW_ORG_ID, VW_COLLECTION_ID in .env (not secret). With these set there is NO fallback to the folder.
+# Create vw_client_id, vw_client_secret (API key of a Vaultwarden account that can edit ONLY that collection)
+# and vw_master (its master password) next to this file: owned by uid 10001, mode 400.
+services:
+  gdpr:
+    tmpfs:
+      # bw state lives here only
+      - /tmp/bw:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10001,gid=10001
+    volumes:
+      - ./vw_client_id:/run/secrets/vw_client_id:ro
+      - ./vw_client_secret:/run/secrets/vw_client_secret:ro
+      - ./vw_master:/run/secrets/vw_master:ro
