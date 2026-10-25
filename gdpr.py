@@ -418,12 +418,16 @@ class Gdpr:
         chats = guild.get_channel(self.cfg["chats_id"])
         if chats is None:
             raise GdprError("chats channel not found")
-        t = await chats.create_thread(name=("alert-" + slug(title))[:60], type=discord.ChannelType.private_thread,
-                                      invitable=False, auto_archive_duration=1440)
-        for uid in dict.fromkeys([self.cfg["owner_id"]] + [i for _, i in targets]):
-            await t.add_user(discord.Object(id=uid))
-        await t.send(text, allowed_mentions=allowed)
-        self.alert_opened.append(now)
+        self.alert_opened.append(now)  # count before any await, so concurrent alerts see it (rate limits make the awaits slow)
+        try:
+            t = await chats.create_thread(name=("alert-" + slug(title))[:60], type=discord.ChannelType.private_thread,
+                                          invitable=False, auto_archive_duration=1440)
+            for uid in dict.fromkeys([self.cfg["owner_id"]] + [i for _, i in targets]):
+                await t.add_user(discord.Object(id=uid))
+            await t.send(text, allowed_mentions=allowed)
+        except BaseException:
+            self.alert_opened.remove(now)
+            raise
         self.alert_threads[key] = (t.id, now)
         await self.log(guild, f"alert: {t.mention} opened with " + ", ".join(n for n, _ in targets))
 

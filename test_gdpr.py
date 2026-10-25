@@ -1306,6 +1306,22 @@ class AlertRelay(unittest.TestCase):
         self.assertEqual(self.g.chats.create_thread.call_count, 2)
         self.assertIn("cap reached", self.g.hq.send.call_args[0][0])
 
+    def test_hourly_cap_concurrent(self):
+        async def go():
+            await asyncio.gather(*(self.w.handle_message(alert_msg(self.g, f"**Alert {n}** <@12>")) for n in "ABCDEF"))
+        orig = self.g.chats.create_thread
+        async def slow(*a, **k):
+            await asyncio.sleep(0.01)
+            return await orig(*a, **k)
+        self.g.chats.create_thread = slow
+        run(go())
+        self.assertEqual(orig.call_count, 2)
+
+    def test_failed_create_frees_cap_slot(self):
+        self.g.chats.create_thread.side_effect = W.GdprError("boom")
+        self.feed("**Alert A** <@12>")
+        self.assertEqual(self.w.alert_opened, [])
+
     def test_off_by_default(self):
         w = W.Gdpr(CFG, BOT)
         run(w.handle_message(alert_msg(self.g, "**A** <@12>")))
