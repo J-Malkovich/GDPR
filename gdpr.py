@@ -1,5 +1,7 @@
 """GDPR: AI-free Discord bot that manages private threads for a team of agent bots. No model calls, no state files.
 
+Optional card watcher: PLANKA_URL, PLANKA_BOARD_ID, PLANKA_API_KEY[_FILE] (README).
+
 Env: GDPR_TOKEN, OWNER_ID, HQ_ID, CHATS_ID, AGENT_IDS (name=id,name=id); optional OWNER_NAME,
 RESTRICTED_AGENTS. `python gdpr.py setup <dir>` prepares Discord, .env, key and secrets folder (README B3).
 """
@@ -496,6 +498,125 @@ async def handle_secret_submit(inter, owner_id, name, raw, key_path, vault, inbo
         ephemeral=True)
 
 
+class CardWatcher:
+    """Polls a Planka board (read-only API key) and, for cards that carry the custom fields notify_thread /
+    notify_agent, produces ONE line when a card enters Reviewing, gets the label blocked, or sits In Progress
+    without activity for stall_hours. No model calls. State is in memory; the first scan only records the
+    current state (so a restart never repeats old notices)."""
+
+    def __init__(self, cfg, now=time.time):
+        self.cfg, self.now = cfg, now
+        self.cards = {}      # card id -> dict(list, blocked, stalled, comments, active)
+        self.seeded = False
+
+    @staticmethod
+    def _ts(s):
+        from datetime import datetime
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+        except (AttributeError, ValueError):
+            return 0.0
+
+    def scan(self, board):
+        """board = Planka GET /api/boards/<id> JSON. Returns [(thread_id, agent_id or None, text)]."""
+        inc = board.get("included", {})
+        lists = {l["id"]: (l.get("name") or "").strip().lower() for l in inc.get("lists", [])}
+        labels = {l["id"]: (l.get("name") or "").strip().lower() for l in inc.get("labels", [])}
+        fields = {f["id"]: f["name"] for f in inc.get("customFields", [])}
+        blocked_by_card, values = {}, {}
+        for cl in inc.get("cardLabels", []):
+            if labels.get(cl["labelId"]) == "blocked":
+                blocked_by_card[cl["cardId"]] = True
+        for v in inc.get("customFieldValues", []):
+            values.setdefault(v["cardId"], {})[fields.get(v["customFieldId"])] = (v.get("content") or "").strip()
+        review, progress = self.cfg["review_list"], self.cfg["progress_list"]
+        stall = self.cfg["stall_hours"] * 3600
+        now, out, seen = self.now(), [], set()
+        for c in inc.get("cards", []):
+            if c.get("isClosed"):
+                continue
+            v = values.get(c["id"], {})
+            thread, agent = v.get("notify_thread", ""), v.get("notify_agent", "")
+            if not thread.isdigit():
+                continue
+            seen.add(c["id"])
+            lst = lists.get(c["listId"], "")
+            blocked = bool(blocked_by_card.get(c["id"]))
+            comments = c.get("commentsTotal") or 0
+            prev = self.cards.get(c["id"])
+            active = max(self._ts(c.get("updatedAt")), self._ts(c.get("listChangedAt")), self._ts(c.get("createdAt")))
+            if prev and prev["comments"] != comments:
+                active = max(active, now)
+            if prev:
+                active = max(active, prev["active"])
+            stalled = bool(stall) and lst == progress and now - active >= stall
+            st = dict(list=lst, blocked=blocked, stalled=stalled, comments=comments, active=active)
+            if self.seeded:
+                url = f"{self.cfg['url']}/cards/{c['id']}"
+                name = " ".join(str(c.get("name", "")).split())[:100]
+                why = None
+                if lst == review and (not prev or prev["list"] != review):
+                    why = "is now in Reviewing"
+                elif blocked and not (prev and prev["blocked"]):
+                    why = "is blocked"
+                elif stalled and not (prev and prev["stalled"]):
+                    why = f"has had no activity for {self.cfg['stall_hours']:g}h while In Progress"
+                if why:
+                    mention = f"<@{agent}> " if agent.isdigit() else ""
+                    out.append((int(thread), int(agent) if agent.isdigit() else None,
+                                f"{mention}Card \"{name}\" {why}: {url}"))
+            self.cards[c["id"]] = st
+        for cid in set(self.cards) - seen:   # field removed, card closed or deleted: forget it
+            del self.cards[cid]
+        self.seeded = True
+        return out
+
+
+def watcher_from_env(env):
+    """None unless PLANKA_URL, PLANKA_BOARD_ID and a key (PLANKA_API_KEY or PLANKA_API_KEY_FILE) are set."""
+    url, board = env.get("PLANKA_URL", "").strip().rstrip("/"), env.get("PLANKA_BOARD_ID", "").strip()
+    key = env.get("PLANKA_API_KEY", "").strip()
+    if not key and env.get("PLANKA_API_KEY_FILE", "").strip():
+        key = open(env["PLANKA_API_KEY_FILE"].strip()).read().strip()
+        key = key.split("=", 1)[1].strip() if key.startswith("planka_api_key=") else key
+    if not (url and board and key):
+        return None
+    if not url.startswith(("http://", "https://")):
+        raise SystemExit("gdpr: PLANKA_URL must start with http:// or https://")
+    try:
+        cfg = dict(url=url, board=board, key=key, poll=max(30, int(env.get("PLANKA_POLL_SECONDS", "180"))),
+                   stall_hours=float(env.get("PLANKA_STALL_HOURS", "24")),
+                   review_list=env.get("PLANKA_REVIEW_LIST", "Reviewing").strip().lower(),
+                   progress_list=env.get("PLANKA_PROGRESS_LIST", "In Progress").strip().lower())
+    except ValueError:
+        raise SystemExit("gdpr: PLANKA_POLL_SECONDS / PLANKA_STALL_HOURS must be numbers")
+    return CardWatcher(cfg)
+
+
+def fetch_board(cfg):
+    import urllib.request
+    req = urllib.request.Request(f"{cfg['url']}/api/boards/{cfg['board']}", headers={"x-api-key": cfg["key"]})
+    with urllib.request.urlopen(req, timeout=20) as r:   # GET only: the key is read-only on purpose
+        return json.load(r)
+
+
+async def watch_cards(watcher, client, fetch=fetch_board):
+    """Poll forever; one failed poll or post never stops the loop. The key is never logged."""
+    while True:
+        try:
+            board = await asyncio.to_thread(fetch, watcher.cfg)
+            for thread_id, agent_id, text in watcher.scan(board):
+                try:
+                    ch = client.get_channel(thread_id) or await client.fetch_channel(thread_id)
+                    await ch.send(text, allowed_mentions=discord.AllowedMentions(
+                        users=[discord.Object(agent_id)] if agent_id else False))
+                except Exception as e:
+                    print(f"card watcher: could not post to thread {thread_id}: {e.__class__.__name__}", flush=True)
+        except Exception as e:
+            print(f"card watcher: poll failed: {e.__class__.__name__}", flush=True)
+        await asyncio.sleep(watcher.cfg["poll"])
+
+
 def main():
     from discord import app_commands
     cfg = load_config()
@@ -503,6 +624,7 @@ def main():
     intents.guilds = intents.guild_messages = intents.message_content = True
     client = discord.Client(intents=intents)
     w = Gdpr(cfg)
+    watcher = watcher_from_env(os.environ)  # optional Planka card watcher
     tree = app_commands.CommandTree(client)
 
     async def run(inter, coro_fn, *args):
@@ -566,6 +688,9 @@ def main():
     async def on_ready():
         w.bot_id = client.user.id
         await tree.sync()
+        if watcher and not getattr(client, "_watching", False):
+            client._watching = True
+            asyncio.create_task(watch_cards(watcher, client))
         print(f"GDPR ready as {client.user}", flush=True)
 
     @client.event
