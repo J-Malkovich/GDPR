@@ -192,13 +192,16 @@ class Gate(unittest.TestCase):
     def test_trailing_question_blocks(self):
         self.assertFalse(P.worth_asking("I'll start now, ok?"))
 
-    def test_tool_use_this_turn_blocks_but_an_earlier_turn_does_not(self):
+    def test_tool_calls_in_the_turn_do_not_exempt_a_promise(self):
+        # replay of real histories: most stops were "did some work, then ended on I'll continue"
         used = [{"role": "user", "content": "go"}, {"role": "assistant", "tool_calls": [{"id": "1"}]},
-                {"role": "tool", "content": "ok"}, {"role": "assistant", "content": "I'll do the rest now."}]
-        self.assertFalse(P.worth_asking("I'll do the rest now.", "go", used))
-        earlier = [{"role": "assistant", "tool_calls": [{"id": "1"}]}, {"role": "tool", "content": "ok"},
-                   {"role": "user", "content": "go"}, {"role": "assistant", "content": "I'll do it now."}]
-        self.assertTrue(P.worth_asking("I'll do it now.", "go", earlier))
+                {"role": "tool", "content": "ok"}]
+        self.assertTrue(P.worth_asking("Two of five done. I'll do the rest now.", "go", used))
+
+    def test_gate_names_the_pattern_that_matched(self):
+        self.assertEqual(P.gate("Two of five done. I'll do the rest now."), "promise")
+        self.assertEqual(P.gate("Step 1 is finished. I'm continuing with the rest."), "progressive")
+        self.assertIsNone(P.gate("Everything is finished and verified."))
 
     def test_reply_to_a_background_event_is_skipped(self):
         for um in ("[IMPORTANT: Background process proc_1 completed normally (exit code 0).",
@@ -214,6 +217,28 @@ class Gate(unittest.TestCase):
         self.assertEqual((o.seen, c.sent), ([], []))
 
 
+# Paraphrased from the labelled real stops (agents ended a turn on one of these and stopped).
+STOPS_V2 = ["Everything above is checked. I'll audit each skill against live state, then fix what I find.",
+            "That part is verified. I'll do that after the other agent replies.",
+            "The CVE fixes are confirmed. Next I'll run the flood re-test and post it to the card.",
+            "One finding is acceptable for now. I'm continuing with the rest.",
+            "I also said I'd create the backlog cards and have not yet. I'll create them now.",
+            "Steps 2 to 5 have not started. I'm fixing the host-down alert and finishing step 1 first.",
+            "That needs you or another agent to create it. I'll carry on with the scraper now unless you object.",
+            "Next are the aggregator tests, then the docs. I'll push after each one."]
+
+
+class StopsV2(unittest.TestCase):
+    def test_every_paraphrased_real_stop_passes_the_gate(self):
+        for t in STOPS_V2:
+            self.assertIsNotNone(P.gate(t), t)
+
+
+    def test_known_miss_promise_is_not_in_the_last_sentence(self):
+        # Documented gap (2 of the 14 labelled stops): the promise sits before a closing courtesy line.
+        self.assertIsNone(P.gate("I'll do items 1 to 3 next, starting with the ping test. Say so if you'd rather I stop here."))
+
+
 class LogOnly(unittest.TestCase):
     def test_default_mode_logs_and_never_nudges(self):
         old = os.environ.pop("PROMISE_CHECK_MODE")
@@ -223,6 +248,7 @@ class LogOnly(unittest.TestCase):
                 hook(c, opener_for(0.97))(session_id="s", assistant_response=PROMISE)
             self.assertEqual(c.sent, [])
             self.assertTrue(any("LOG-ONLY would nudge" in m for m in cm.output))
+            self.assertTrue(any("gate hit (promise), jev=0.97" in m for m in cm.output))
         finally:
             os.environ["PROMISE_CHECK_MODE"] = old
 
