@@ -7,8 +7,8 @@ plugins.entries.promise-check.allow_gateway_injection: true and a Jev key file (
 default ~/.hermes/secrets/jev_api_key). Off by default: add `promise-check` to plugins.enabled to turn it on. Even then it only LOGS (gate hits, Jev
 score, 'would nudge') until env PROMISE_CHECK_MODE=nudge is set.
 
-Gate: a promise phrase in the last sentence, no '?', no mention, no tool call this turn, not a reply to a
-background event. Only then Jev is asked.
+Gate: a promise or progressive phrase in the last sentence, no '?', no mention, no credential lookalike, not a
+reply to a background event (tool calls in the turn do not exempt it). Only then Jev is asked.
 
 Safety: at most MAX_STREAK nudges in a row per session (reset by any turn that is not a promise); Jev errors,
 bad answers or a missing key mean no nudge; the agent's text goes only into Jev's `state`.
@@ -36,6 +36,11 @@ MENTION = re.compile(r"<@[!&]?\d+>")
 PROMISE = re.compile(
     r"\b(i['\u2019]ll|i will|i['\u2019]m going to|i am going to|let me|let['\u2019]s|now i|next[, ]+i|next up|"
     r"starting now|starting with|going to|will now)\b|(?:^|[.!?:;,]\s+)on it\b", re.I)
+# Second pattern: "I'm continuing", "carry on", "I'll push"... Agents often do real work, then end on one of these
+# and stop (found by replaying the five agents' session history), so a tool call in the turn does not exempt it.
+PROGRESSIVE = re.compile(
+    r"\b(i['\u2019]m (now )?(continuing|fixing|finishing|working|checking|running|writing|building|doing|starting|going)|"
+    r"continuing with|carry on|i['\u2019]ll (continue|carry on|keep going|push|start|proceed))\b", re.I)
 BACKGROUND_EVENT = re.compile(r"^\s*(?:\[[^\]\n]{1,40}\]\s*)?\[(?:IMPORTANT: Background process|ASYNC DELEGATION|SYSTEM: Background)", re.I)
 # Hermes appends "⚠️ File-mutation verifier: ..." (plus bullet lines) to a final reply after failed writes; it is
 # not the agent's own words, so it must not count as the last sentence.
@@ -103,38 +108,36 @@ def last_sentence(text):
     return parts[-1] if parts else ""
 
 
-def turn_used_tools(history):
-    """True if the CURRENT turn (everything after the last user message) called any tool."""
-    for m in reversed(history or []):
-        if not isinstance(m, dict):
-            continue
-        if m.get("role") == "user":
-            return False
-        if m.get("role") == "tool" or m.get("tool_calls"):
-            return True
-    return False
+def gate(text, user_message=""):
+    """The free check before any Jev call. Returns which pattern matched ('promise' or 'progressive'), or None.
+    Needs: a promise/progressive phrase in the last sentence, no trailing '?', no mention outside code, no
+    credential lookalike, and the turn not a reply to a background-process/delegation event. Tool calls in the
+    turn do NOT exempt it. Wait words do not block: Jev decides waits vs stops."""
+    t = VERIFIER_FOOTER.sub("", text or "").strip()
+    if len(t) < MIN_CHARS or t.endswith("?") or MENTION.search(CODE.sub(" ", t)):
+        return None  # a mention is a hand-off or a question: the agent is waiting on someone
+    if SECRETISH.search(t):
+        return None
+    if BACKGROUND_EVENT.match(user_message if isinstance(user_message, str) else ""):
+        return None
+    last = last_sentence(t)
+    if PROMISE.search(last):
+        return "promise"
+    if PROGRESSIVE.search(last):
+        return "progressive"
+    return None
 
 
 def worth_asking(text, user_message="", history=None):
-    """The gate. Needs: a promise phrase in the last sentence, no trailing '?', no mention outside code,
-    no tool call in the turn, and the turn was not a reply to a background-process/delegation event."""
-    t = VERIFIER_FOOTER.sub("", text or "").strip()
-    if len(t) < MIN_CHARS or t.endswith("?") or MENTION.search(CODE.sub(" ", t)):
-        return False  # a mention is a hand-off or a question: the agent is waiting on someone
-    if SECRETISH.search(t):
-        return False
-    if BACKGROUND_EVENT.match(user_message if isinstance(user_message, str) else ""):
-        return False
-    if turn_used_tools(history):
-        return False  # it did something this turn; the claim is not a bare promise
-    return bool(PROMISE.search(last_sentence(t)))
+    return gate(text, user_message) is not None  # history is accepted for compatibility and ignored
 
 
 def make_hook(ctx, ask=ask_jev, key_reader=read_key):
-    def on_post_llm_call(session_id="", assistant_response=None, user_message="", conversation_history=None, **_):
+    def on_post_llm_call(session_id="", assistant_response=None, user_message="", **_):
         try:
             text = assistant_response if isinstance(assistant_response, str) else ""
-            if not worth_asking(text, user_message, conversation_history):
+            kind = gate(text, user_message)
+            if kind is None:
                 _reset(session_id)
                 return None
             key = key_reader()
@@ -144,7 +147,7 @@ def make_hook(ctx, ask=ask_jev, key_reader=read_key):
                 logger.info("promise-check: streak cap reached for %s", session_id)
                 return None
             p = ask(key, text)
-            logger.info("promise-check: gate hit, jev=%.2f session=%s", p, session_id)
+            logger.info("promise-check: gate hit (%s), jev=%.2f session=%s", kind, p, session_id)
             if p < THRESHOLD:
                 _reset(session_id)
                 return None
