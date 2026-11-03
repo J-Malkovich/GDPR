@@ -37,6 +37,9 @@ PROMISE = re.compile(
     r"\b(i['\u2019]ll|i will|i['\u2019]m going to|i am going to|let me|let['\u2019]s|now i|next[, ]+i|next up|"
     r"starting now|starting with|going to|will now)\b|(?:^|[.!?:;,]\s+)on it\b", re.I)
 BACKGROUND_EVENT = re.compile(r"^\s*(?:\[[^\]\n]{1,40}\]\s*)?\[(?:IMPORTANT: Background process|ASYNC DELEGATION|SYSTEM: Background)", re.I)
+# Hermes appends "⚠️ File-mutation verifier: ..." (plus bullet lines) to a final reply after failed writes; it is
+# not the agent's own words, so it must not count as the last sentence.
+VERIFIER_FOOTER = re.compile(r"\n*[ \t]*⚠️?\s*File-mutation verifier:.*\Z", re.S)
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
 CODE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
 QUESTIONS = {"promise": {
@@ -108,7 +111,7 @@ def turn_used_tools(history):
 def worth_asking(text, user_message="", history=None):
     """The gate. Needs: a promise phrase in the last sentence, no trailing '?', no mention outside code,
     no tool call in the turn, and the turn was not a reply to a background-process/delegation event."""
-    t = (text or "").strip()
+    t = VERIFIER_FOOTER.sub("", text or "").strip()
     if len(t) < MIN_CHARS or t.endswith("?") or MENTION.search(CODE.sub(" ", t)):
         return False  # a mention is a hand-off or a question: the agent is waiting on someone
     if BACKGROUND_EVENT.match(user_message if isinstance(user_message, str) else ""):

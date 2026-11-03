@@ -163,6 +163,11 @@ class Gate(unittest.TestCase):
         self.assertTrue(P.worth_asking("On it, starting with the prep."))
         self.assertTrue(P.worth_asking("Understood. On it."))
 
+    def test_hermes_verifier_footer_is_not_the_last_sentence(self):
+        foot = "\n\n\u26a0\ufe0f File-mutation verifier: 1 write failed\n  \u2022 /tmp/x.py: could not find old_string"
+        self.assertTrue(P.worth_asking("Found it. I'll patch it now." + foot))
+        self.assertFalse(P.worth_asking("Patched and verified." + foot))
+
     def test_trailing_question_blocks(self):
         self.assertFalse(P.worth_asking("I'll start now, ok?"))
 
