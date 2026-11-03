@@ -1,0 +1,6 @@
+name: promise-check
+version: "0.1.0"
+description: "When a turn ends with a message that promises work ('I'll do X') and nothing follows, ask TypeSafe Jev one yes/no question and, if yes, queue a nudge so the agent carries on. Fails closed: any Jev error means no nudge."
+author: Fireship
+provides_hooks:
+  - post_llm_call
