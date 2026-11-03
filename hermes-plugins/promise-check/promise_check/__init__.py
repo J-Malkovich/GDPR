@@ -40,6 +40,13 @@ BACKGROUND_EVENT = re.compile(r"^\s*(?:\[[^\]\n]{1,40}\]\s*)?\[(?:IMPORTANT: Bac
 # Hermes appends "⚠️ File-mutation verifier: ..." (plus bullet lines) to a final reply after failed writes; it is
 # not the agent's own words, so it must not count as the last sentence.
 VERIFIER_FOOTER = re.compile(r"\n*[ \t]*⚠️?\s*File-mutation verifier:.*\Z", re.S)
+# Anything that looks like a credential never leaves the host: such a message is not sent to Jev at all.
+SECRETISH = re.compile(
+    r"-----BEGIN [A-Z ]*(?:PRIVATE KEY|CERTIFICATE)|\bsk-[A-Za-z0-9_-]{16,}|\bgh[pousr]_[A-Za-z0-9]{20,}|"
+    r"\bgithub_pat_[A-Za-z0-9_]{20,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b|\bAIza[0-9A-Za-z_-]{30,}|"
+    r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.|\b[A-Fa-f0-9]{32,}\b|\b[A-Za-z0-9+/_-]{40,}={0,2}(?![\w/.-])|"
+    r"(?:password|passwd|secret|token|api[_-]?key|bearer)\s*[:=]\s*\S{6,}|"
+    r"\b[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}", re.I)
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
 CODE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
 QUESTIONS = {"promise": {
@@ -114,6 +121,8 @@ def worth_asking(text, user_message="", history=None):
     t = VERIFIER_FOOTER.sub("", text or "").strip()
     if len(t) < MIN_CHARS or t.endswith("?") or MENTION.search(CODE.sub(" ", t)):
         return False  # a mention is a hand-off or a question: the agent is waiting on someone
+    if SECRETISH.search(t):
+        return False
     if BACKGROUND_EVENT.match(user_message if isinstance(user_message, str) else ""):
         return False
     if turn_used_tools(history):

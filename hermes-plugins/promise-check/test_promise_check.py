@@ -168,6 +168,27 @@ class Gate(unittest.TestCase):
         self.assertTrue(P.worth_asking("Found it. I'll patch it now." + foot))
         self.assertFalse(P.worth_asking("Patched and verified." + foot))
 
+    def test_credential_lookalikes_never_reach_jev(self):
+        bad = ["I'll use ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4 to push now.",
+               "I'll deploy with sk-" + "abcdef0123456789abcdef now.",
+               "I'll paste -----BEGIN OPENSSH PRIVATE KEY----- next.",
+               "I'll set password=hunter22secret and restart.",
+               "I'll curl with Bearer: abcdefghij1234 now.",
+               "I'll check hash " + "0123456789abcdef" * 2 + " next.",
+               "I'll use eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig now.",
+               "I'll store " + "A" * 20 + "b1" * 12 + " in the vault now."]
+        for t in bad:
+            self.assertFalse(P.worth_asking(t), t)
+            o, c = opener_for(0.99), Ctx()
+            hook(c, o)(session_id="s", assistant_response=t)
+            self.assertEqual((o.seen, c.sent), ([], []), t)
+
+    def test_normal_text_with_paths_and_ids_still_passes(self):
+        for t in ("I'll edit /root/.hermes/work/gdpr-public/gdpr.py now.", "I'll ssh to dev@192.168.178.230 next.",
+                  "I'll open PR #14 and ping <@1> later".replace("<@1>", "Hermes"),
+                  "I'll check commit b6737ea next.", "I'll restart the gdpr container now."):
+            self.assertTrue(P.worth_asking(t), t)
+
     def test_trailing_question_blocks(self):
         self.assertFalse(P.worth_asking("I'll start now, ok?"))
 
